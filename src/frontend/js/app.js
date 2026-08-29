@@ -248,8 +248,7 @@ function pDashboard() {
                         <div style="font-size:12px;font-weight:600">${d.name}</div>
                         <div style="font-size:10px;color:var(--text3)">${d.type}</div>
                     </div>
-                    ${d.url ? `<a href="${d.url}" target="_blank" style="font-size:10px;color:var(--blue);text-decoration:none" onclick="event.stopPropagation()">Open</a>` : ''}
-                    <button class="btn btn-ghost btn-sm" onclick="nav('services')" style="font-size:10px">View</button>
+                    <span style="font-size:10px;color:var(--text3)">${d.time ? new Date(d.time).toLocaleDateString() + ' ' + new Date(d.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : ''}</span>
                 </div>`).join('')}
             </div>
 
