@@ -9,6 +9,7 @@ from typing import Optional, Callable
 DATA_DIR = Path.home() / ".cloudguard"
 WARNINGS_FILE = DATA_DIR / "warnings.json"
 PREFS_FILE = DATA_DIR / "preferences.json"
+SCAN_HISTORY_FILE = DATA_DIR / "scan_history.json"
 
 
 def _ensure_data_dir():
@@ -155,6 +156,7 @@ class WarningManager:
         self._listeners: list[Callable] = []
         self._warnings: dict = _load_json(WARNINGS_FILE, {"shown": {}, "ignored": {}, "fixed": {}})
         self._prefs: dict = _load_json(PREFS_FILE, {"always_ignore_checks": [], "audience": "beginner"})
+        self._scan_history: list = _load_json(SCAN_HISTORY_FILE, [])
 
     def on_event(self, callback: Callable):
         self._listeners.append(callback)
@@ -169,6 +171,7 @@ class WarningManager:
     def _save(self):
         _save_json(WARNINGS_FILE, self._warnings)
         _save_json(PREFS_FILE, self._prefs)
+        _save_json(SCAN_HISTORY_FILE, self._scan_history)
 
     def get_audience(self) -> str:
         return self._prefs.get("audience", "beginner")
@@ -238,6 +241,27 @@ class WarningManager:
 
     def get_always_ignored(self) -> list[str]:
         return self._prefs.get("always_ignore_checks", [])
+
+    def save_scan_result(self, directory: str, findings: list[dict], summary: dict):
+        """Save a scan result to history."""
+        import time
+        entry = {
+            "id": f"scan_{int(time.time() * 1000)}",
+            "directory": directory,
+            "timestamp": time.time(),
+            "findings_count": len(findings),
+            "summary": summary,
+            "findings": findings[:50]  # Cap at 50 to avoid huge files
+        }
+        self._scan_history.insert(0, entry)
+        # Keep only last 50 scans
+        if len(self._scan_history) > 50:
+            self._scan_history = self._scan_history[:50]
+        self._save()
+
+    def get_scan_history(self) -> list[dict]:
+        """Get all saved scan results."""
+        return self._scan_history
 
     def process_findings(self, findings: list[dict]) -> list[dict]:
         """Filter findings based on user preferences and history."""

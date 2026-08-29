@@ -58,6 +58,13 @@ class Bridge(QObject):
         self._pending: dict[str, callable] = {}
         self._main_window = None
         self._config = self._load_config()
+        # Load saved Ollama model from config
+        saved_model = self._config.get("settings", {}).get("ollama_model", "")
+        if saved_model:
+            self.ollama._model = saved_model
+        saved_url = self._config.get("settings", {}).get("ollama_url", "")
+        if saved_url:
+            self.ollama.base_url = saved_url
 
     def set_main_window(self, win):
         self._main_window = win
@@ -260,14 +267,6 @@ class Bridge(QObject):
         return json.dumps({"success": True})
 
     @Slot(str, str, result=str)
-    def fix_finding(self, finding_json: str, project_path: str) -> str:
-        try:
-            finding = json.loads(finding_json)
-            return json.dumps(self.cli.fix_finding(finding, project_path))
-        except Exception as e:
-            return json.dumps({"success": False, "error": str(e)})
-
-    @Slot(str, str, result=str)
     def ai_generate_fix(self, finding_json: str, project_path: str) -> str:
         try:
             finding = json.loads(finding_json)
@@ -305,7 +304,17 @@ class Bridge(QObject):
     @Slot(str, result=str)
     def full_security_audit(self, directory: str) -> str:
         call_id = "fullaudit"
-        self._run_worker(call_id, self.cli.full_security_audit, directory, self.ollama)
+        def _audit():
+            result = self.cli.full_security_audit(directory, self.ollama)
+            # Save scan results to history
+            if result.get("success"):
+                self.warning_mgr.save_scan_result(
+                    directory,
+                    result.get("findings", []),
+                    result.get("summary", {})
+                )
+            return result
+        self._run_worker(call_id, _audit)
         return json.dumps({"success": True, "call_id": call_id})
 
     @Slot(result=str)
@@ -313,6 +322,10 @@ class Bridge(QObject):
         call_id = "history"
         self._run_worker(call_id, self.warning_mgr.get_warning_history)
         return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(result=str)
+    def get_scan_history(self) -> str:
+        return json.dumps({"success": True, "data": self.warning_mgr.get_scan_history()})
 
     @Slot(result=str)
     def get_always_ignored(self) -> str:
@@ -362,6 +375,8 @@ class Bridge(QObject):
     def ollama_set_model(self, model: str) -> str:
         self.ollama._model = model
         self.ollama._available = True
+        self._config.setdefault("settings", {})["ollama_model"] = model
+        self._save_config()
         return json.dumps({"success": True})
 
     @Slot(str, result=str)
@@ -369,6 +384,8 @@ class Bridge(QObject):
         self.ollama.base_url = url.rstrip("/")
         self.ollama._available = None
         self.ollama._model = None
+        self._config.setdefault("settings", {})["ollama_url"] = url.rstrip("/")
+        self._save_config()
         return self.ollama_status()
 
     @Slot(str, result=str)

@@ -34,7 +34,7 @@ class WranglerCLI:
                 pass
 
     def _run(self, args: list[str], timeout: int = 30) -> dict:
-        cmd = "wrangler " + " ".join(args)
+        cmd = "wrangler " + subprocess.list2cmdline(args)
         try:
             result = subprocess.run(
                 cmd, capture_output=True, timeout=timeout,
@@ -281,28 +281,16 @@ class WranglerCLI:
         return workers
 
     def delete_pages_project(self, name: str) -> dict:
-        result = self._run(["pages", "project", "delete", name])
+        result = self._run(["pages", "project", "delete", name, "--yes"])
         if result["success"]:
             return {"success": True, "message": f"Pages project '{name}' deleted"}
-        error = result.get("error", "Delete failed")
-        if "--force" in error:
-            result2 = self._run(["pages", "project", "delete", name, "--yes"])
-            if result2["success"]:
-                return {"success": True, "message": f"Pages project '{name}' deleted"}
-            return {"success": False, "error": result2.get("error", "Delete failed")}
-        return {"success": False, "error": error}
+        return {"success": False, "error": result.get("error", "Delete failed")}
 
     def delete_worker(self, name: str) -> dict:
-        result = self._run(["delete", name])
+        result = self._run(["delete", name, "--force"])
         if result["success"]:
             return {"success": True, "message": f"Worker '{name}' deleted"}
-        error = result.get("error", "Delete failed")
-        if "--force" in error or "Unknown argument" in error:
-            result2 = self._run(["delete", name, "--yes"])
-            if result2["success"]:
-                return {"success": True, "message": f"Worker '{name}' deleted"}
-            return {"success": False, "error": result2.get("error", "Delete failed")}
-        return {"success": False, "error": error}
+        return {"success": False, "error": result.get("error", "Delete failed")}
 
     def get_worker_routes(self, name: str) -> list[dict]:
         result = self._run(["workers", "routes", "list", "--worker-name", name])
@@ -813,7 +801,7 @@ class WranglerCLI:
 
     def d1_execute(self, database: str, sql: str) -> dict:
         """Execute SQL on a D1 database."""
-        args = ["d1", "execute", database, "--command", sql]
+        args = ["d1", "execute", database, "--command", sql, "--remote"]
         result = self._run(args, timeout=30)
         if result["success"]:
             raw = result.get("raw", "")
@@ -829,7 +817,7 @@ class WranglerCLI:
         p = Path(file_path)
         if not p.exists():
             return {"success": False, "error": f"File not found: {file_path}"}
-        args = ["d1", "execute", database, "--file", str(p)]
+        args = ["d1", "execute", database, "--file", str(p), "--remote"]
         result = self._run(args, timeout=60)
         if result["success"]:
             return {"success": True, "output": result.get("raw", "")}
@@ -849,16 +837,7 @@ class WranglerCLI:
         return details
 
     def get_r2_details(self, bucket: str) -> dict:
-        details = {"name": bucket, "objects": []}
-        result = self._run(["r2", "object", "list", bucket])
-        if result["success"]:
-            raw = result.get("raw", "")
-            try:
-                data = json.loads(raw)
-                if isinstance(data, dict):
-                    details["objects"] = data.get("objects", [])
-            except json.JSONDecodeError:
-                pass
+        details = {"name": bucket, "objects": self._list_r2_objects_api(bucket)}
         return details
 
     # ── Create Resources ──────────────────────────────────
@@ -890,15 +869,33 @@ class WranglerCLI:
         return {"success": False, "error": result.get("error", "Upload failed")}
 
     def list_r2_objects(self, bucket: str) -> list[dict]:
-        result = self._run(["r2", "object", "list", bucket])
-        if result["success"]:
-            raw = result.get("raw", "")
-            try:
-                data = json.loads(raw)
-                if isinstance(data, dict):
-                    return data.get("objects", [])
-            except json.JSONDecodeError:
-                pass
+        return self._list_r2_objects_api(bucket)
+
+    def _list_r2_objects_api(self, bucket: str) -> list[dict]:
+        """List R2 objects via Cloudflare API."""
+        try:
+            token = self._get_oauth_token()
+            if not token or not self._account_id:
+                return []
+            api_url = f"https://api.cloudflare.com/client/v4/accounts/{self._account_id}/r2/buckets/{bucket}/objects?limit=100"
+            req = urllib.request.Request(api_url, headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            })
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+                if data.get("success"):
+                    objects = []
+                    for obj in data.get("result", []):
+                        objects.append({
+                            "key": obj.get("key", ""),
+                            "size": obj.get("size", 0),
+                            "last_modified": obj.get("last_modified", ""),
+                            "etag": obj.get("etag", "")
+                        })
+                    return objects
+        except Exception:
+            pass
         return []
 
     def delete_r2_object(self, bucket: str, key: str) -> dict:
@@ -908,13 +905,13 @@ class WranglerCLI:
         return {"success": False, "error": result.get("error", "Delete failed")}
 
     def delete_d1_database(self, name: str) -> dict:
-        result = self._run(["d1", "delete", name, "--force"])
+        result = self._run(["d1", "delete", name, "--skip-confirmation"])
         if result["success"]:
             return {"success": True, "message": f"Database '{name}' deleted"}
         return {"success": False, "error": result.get("error", "Delete failed")}
 
     def delete_r2_bucket(self, name: str) -> dict:
-        result = self._run(["r2", "bucket", "delete", name, "--force"])
+        result = self._run(["r2", "bucket", "delete", name])
         if result["success"]:
             return {"success": True, "message": f"Bucket '{name}' deleted"}
         return {"success": False, "error": result.get("error", "Delete failed")}
@@ -1213,7 +1210,7 @@ class WranglerCLI:
                     # Try to find a headers object
                     alt_pattern = r'(headers\s*:\s*\{)'
                     if re.search(alt_pattern, content):
-                        content = re.sub(alt_pattern, rf'\1\n            "{header_http}": "{value}",', content, count=1)
+                        content = re.sub(alt_pattern, rf'\1\n            "{header_http}": "{header_value}",', content, count=1)
                     else:
                         return {"success": False, "error": "Could not find headers in response. Add manually."}
             elif p.suffix == '.py':

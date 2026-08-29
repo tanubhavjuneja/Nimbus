@@ -37,6 +37,7 @@ const S = {
     view: 'dashboard', loggedIn: false, account: '',
     workers: [], pages: [], kv: [], r2: [], d1: [], secrets: [],
     warnings: [], hist: { shown: [], ignored: [], fixed: [], stats: {} },
+    scanHistory: [],
     glossary: {}, audience: 'beginner',
     ollama: { available: false, model: 'none', models: [] },
     alwaysIgnored: [], detailData: null, localPaths: {}
@@ -1264,6 +1265,7 @@ async function runSpecificScan(type) {
 function pHist() {
     const el = $('p-history');
     const h = S.hist;
+    const scans = S.scanHistory || [];
     const all = [
         ...h.fixed.map(w => ({ ...w, _act: 'Fixed', _cls: 'on', _ic: '\u2713' })),
         ...h.ignored.map(w => ({ ...w, _act: 'Ignored', _cls: 'off', _ic: '\u2717' })),
@@ -1273,20 +1275,59 @@ function pHist() {
         <div class="grid g3" style="margin-bottom:18px">
             <div class="card" style="text-align:center"><div class="card-num" style="color:var(--green)">${h.stats.total_fixed || 0}</div><div class="card-sub">Fixed</div></div>
             <div class="card" style="text-align:center"><div class="card-num" style="color:var(--text3)">${h.stats.total_ignored || 0}</div><div class="card-sub">Ignored</div></div>
-            <div class="card" style="text-align:center"><div class="card-num" style="color:var(--blue)">${h.stats.total_shown || 0}</div><div class="card-sub">Active</div></div>
+            <div class="card" style="text-align:center"><div class="card-num" style="color:var(--blue)">${scans.length}</div><div class="card-sub">Scans Run</div></div>
         </div>
-        ${all.length === 0 ? '<div class="empty"><h3>No History Yet</h3><p>Fix or dismiss warnings to see them here.</p></div>' :
-        all.map(w => `
+
+        ${scans.length > 0 ? `
+        <div class="sec-head" style="margin-bottom:10px"><span class="sec-title">Security Scan History</span></div>
+        ${scans.map(s => {
+            const sum = s.summary || {};
+            const dirShort = (s.directory || '').split(/[\\/]/).pop() || s.directory || '';
+            const ts = s.timestamp ? new Date(s.timestamp * 1000).toLocaleString() : '';
+            return `
+            <div class="hist-item" style="cursor:pointer" onclick="showScanDetail('${s.id || ''}')">
+                <div class="hist-icon" style="background:var(--blue-bg);color:var(--blue)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                </div>
+                <div class="hist-body">
+                    <div class="hist-title">${sum.total || s.findings_count || 0} issues found in ${dirShort}</div>
+                    <div class="hist-detail">
+                        ${sum.critical ? `<span style="color:var(--red)">${sum.critical} critical</span> ` : ''}
+                        ${sum.high ? `<span style="color:var(--orange)">${sum.high} high</span> ` : ''}
+                        ${sum.medium ? `<span style="color:var(--yellow)">${sum.medium} medium</span> ` : ''}
+                        ${sum.low ? `<span style="color:var(--text3)">${sum.low} low</span> ` : ''}
+                        ${sum.ai_reviewed ? `<span style="color:var(--green)">${sum.ai_reviewed} AI-reviewed</span>` : ''}
+                    </div>
+                </div>
+                <span class="st st-info">${(sum.scanners || []).length} scanners</span>
+                <span class="hist-time">${ts}</span>
+            </div>`;
+        }).join('')}` : ''}
+
+        ${all.length > 0 ? `
+        <div class="sec-head" style="margin-bottom:10px;margin-top:${scans.length > 0 ? '20px' : '0'}"><span class="sec-title">Warning History</span></div>
+        ${all.map(w => `
         <div class="hist-item">
-            <div class="hist-icon" style="background:var(--${w._cls === 'on' ? 'green' : 'blue'}-dim);color:var(--${w._cls === 'on' ? 'green' : 'text3'})">${w._ic}</div>
+            <div class="hist-icon" style="background:var(--${w._cls === 'on' ? 'green' : 'blue'}-bg);color:var(--${w._cls === 'on' ? 'green' : 'text3'})">${w._ic}</div>
             <div class="hist-body">
                 <div class="hist-title">${w.message || w.check}</div>
                 <div class="hist-detail">${w._act}${w.file ? ' \u2014 ' + w.file.split(/[\\/]/).pop() : ''}</div>
             </div>
-            <span class="st st-${w._cls}">${w._act}</span>
+            <span class="st st-${w._cls === 'on' ? 'on' : 'off'}">${w._act}</span>
             <span class="hist-time">${ago(w.fixed_at || w.ignored_at)}</span>
-        </div>`).join('')}
+        </div>`).join('')}` : ''}
+
+        ${all.length === 0 && scans.length === 0 ? '<div class="empty"><h3>No History Yet</h3><p>Run a security scan or fix/dismiss warnings to see them here.</p></div>' : ''}
     `;
+}
+
+function showScanDetail(scanId) {
+    const scan = (S.scanHistory || []).find(s => s.id === scanId);
+    if (!scan) return;
+    const findings = scan.findings || [];
+    const dir = scan.directory || '';
+    renderScanResults(findings, 'Security Scan', dir);
+    nav('services');
 }
 
 // ═══ Ask AI ═══════════════════════════════════
@@ -1553,6 +1594,10 @@ async function refresh(silent = false) {
     S.alwaysIgnored = get(results[8], []);
     S.workers = get(results[9], []);
 
+    // Load scan history
+    const scanR = await API.call('get_scan_history');
+    if (scanR?.success && scanR.data) S.scanHistory = scanR.data;
+
     // Save to cache
     try { API.call('save_cache', JSON.stringify({ pages: S.pages, workers: S.workers, d1: S.d1, kv: S.kv, r2: S.r2, secrets: S.secrets, ts: Date.now() })); } catch(e) {}
 
@@ -1729,6 +1774,10 @@ async function init() {
         // Load all local paths
         const pathsR = await API.call('get_all_local_paths');
         if (pathsR?.success && pathsR.data) S.localPaths = pathsR.data;
+
+        // Load scan history
+        const scanR = await API.call('get_scan_history');
+        if (scanR?.success && scanR.data) S.scanHistory = scanR.data;
 
         // Refresh in background (silent)
         refresh(true);
