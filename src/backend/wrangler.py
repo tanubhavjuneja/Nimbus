@@ -1,4 +1,4 @@
-"""Backend module — Wrangler CLI wrapper, security scanning, Ollama integration."""
+"""Backend module — Wrangler CLI wrapper, security scanning, ASI:One integration."""
 
 import subprocess
 import json
@@ -10,7 +10,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional, Callable
 
-from backend.warnings import WarningManager, OllamaClient, GLOSSARY, get_glossary, explain_term
+from backend.warnings import WarningManager, ASI1Client, GLOSSARY, get_glossary, explain_term
 
 
 class WranglerCLI:
@@ -647,10 +647,10 @@ class WranglerCLI:
 
     # ── AI Code Review (Ollama-powered) ───────────────────
 
-    def ai_code_review(self, directory: str, ollama_client=None) -> list[dict]:
+    def ai_code_review(self, directory: str, ai_client=None) -> list[dict]:
         """Use Ollama to review source code for security vulnerabilities."""
         findings = []
-        if not ollama_client or not ollama_client.is_available():
+        if not ai_client or not ai_client.is_available():
             return findings
 
         dir_path = Path(directory)
@@ -682,7 +682,7 @@ class WranglerCLI:
             context = f"You are a senior security engineer reviewing code. Be thorough but only report real issues, not style preferences."
             full_prompt = f"File: {f.name}\n\n```\n{content[:4000]}\n```"
 
-            response = ollama_client._chat(full_prompt, context)
+            response = ai_client._chat(full_prompt, context)
             if not response:
                 continue
 
@@ -710,7 +710,7 @@ class WranglerCLI:
 
     # ── Comprehensive Security Audit ──────────────────────
 
-    def full_security_audit(self, directory: str, ollama_client=None) -> dict:
+    def full_security_audit(self, directory: str, ai_client=None) -> dict:
         """Run all security scanners and return combined results."""
         all_findings = []
 
@@ -734,8 +734,8 @@ class WranglerCLI:
 
         # 7. AI code review (if Ollama available)
         ai_findings = []
-        if ollama_client and ollama_client.is_available():
-            ai_findings = self.ai_code_review(directory, ollama_client)
+        if ai_client and ai_client.is_available():
+            ai_findings = self.ai_code_review(directory, ai_client)
             all_findings.extend(ai_findings)
 
         # Count by severity
@@ -751,7 +751,7 @@ class WranglerCLI:
                 "Environment Exposure", "Security Headers", "CORS Check"
             ]
         }
-        if ollama_client and ollama_client.is_available():
+        if ai_client and ai_client.is_available():
             summary["scanners"].append("AI Code Review")
 
         return {"success": True, "findings": all_findings, "summary": summary}
@@ -1352,9 +1352,9 @@ class WranglerCLI:
 
     # ── AI-Assisted Fix Generation ────────────────────────
 
-    def ai_generate_fix(self, finding: dict, ollama_client=None) -> dict:
+    def ai_generate_fix(self, finding: dict, ai_client=None) -> dict:
         """Use Ollama to generate a specific fix for a finding."""
-        if not ollama_client or not ollama_client.is_available():
+        if not ai_client or not ai_client.is_available():
             return {"success": False, "error": "Ollama not available"}
 
         file_path = finding.get("file", "")
@@ -1376,7 +1376,7 @@ class WranglerCLI:
         prompt += "\nProvide the exact code fix. Reply with ONLY the fixed code, no explanation."
 
         context = "You are a senior security engineer. Provide the exact corrected code."
-        response = ollama_client._chat(prompt, context)
+        response = ai_client._chat(prompt, context)
         if response:
             return {"success": True, "fix_code": response, "file": file_path}
         return {"success": False, "error": "Could not generate fix"}

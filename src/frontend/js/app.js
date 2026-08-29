@@ -39,7 +39,7 @@ const S = {
     warnings: [], hist: { shown: [], ignored: [], fixed: [], stats: {} },
     scanHistory: [],
     glossary: {}, audience: 'beginner',
-    ollama: { available: false, model: 'none', models: [] },
+    ai: { available: false, model: 'asi1' },
     alwaysIgnored: [], detailData: null, localPaths: {}
 };
 
@@ -161,31 +161,30 @@ function hideLoginScreen() {
     if (app) app.style.display = 'flex';
 }
 
-// ═══ Ollama Model Classification ═════════════
-
-function classifyModels(models) {
-    const free = [];
-    const paid = [];
-    for (const m of models) {
-        const lower = m.toLowerCase();
-        if (lower.includes(':cloud') || lower.includes(':paid') || lower.includes('-cloud')) {
-            paid.push(m);
-        } else {
-            free.push(m);
-        }
-    }
-    free.sort((a, b) => a.localeCompare(b));
-    paid.sort((a, b) => a.localeCompare(b));
-    return { free, paid };
-}
-
-function modelTag(name) {
-    const lower = name.toLowerCase();
-    if (lower.includes(':cloud') || lower.includes('-cloud') || lower.includes(':paid')) {
-        return '<span style="font-size:9px;padding:1px 5px;border-radius:8px;background:var(--orange-dim);color:var(--orange);margin-left:6px">Paid</span>';
-    }
-    return '<span style="font-size:9px;padding:1px 5px;border-radius:8px;background:var(--green-dim);color:var(--green);margin-left:6px">Free</span>';
-}
+// ═══ Model Classification (unused — Ollama removed) ═══════
+// function classifyModels(models) {
+//     const free = [];
+//     const paid = [];
+//     for (const m of models) {
+//         const lower = m.toLowerCase();
+//         if (lower.includes(':cloud') || lower.includes(':paid') || lower.includes('-cloud')) {
+//             paid.push(m);
+//         } else {
+//             free.push(m);
+//         }
+//     }
+//     free.sort((a, b) => a.localeCompare(b));
+//     paid.sort((a, b) => a.localeCompare(b));
+//     return { free, paid };
+// }
+//
+// function modelTag(name) {
+//     const lower = name.toLowerCase();
+//     if (lower.includes(':cloud') || lower.includes('-cloud') || lower.includes(':paid')) {
+//         return '<span style="font-size:9px;padding:1px 5px;border-radius:8px;background:var(--orange-dim);color:var(--orange);margin-left:6px">Paid</span>';
+//     }
+//     return '<span style="font-size:9px;padding:1px 5px;border-radius:8px;background:var(--green-dim);color:var(--green);margin-left:6px">Free</span>';
+// }
 
 // ═══ Dashboard ═══════════════════════════════
 
@@ -307,8 +306,8 @@ function pWarnings() {
             </div>
             <div class="warn-acts">
                 <button class="btn btn-green btn-sm" onclick="fixW(${i})" id="wf${i}">Fix This</button>
-                <button class="btn btn-ghost btn-sm" onclick="askAI(${i})" ${S.ollama.available ? '' : 'disabled title="Connect Ollama first"'}>
-                    ${S.ollama.available ? 'Ask AI' : 'AI Offline'}
+                <button class="btn btn-ghost btn-sm" onclick="askAI(${i})" ${S.ai.available ? '' : 'disabled title="Connect ASI:One first"'}>
+                    ${S.ai.available ? 'Ask AI' : 'AI Offline'}
                 </button>
                 <span class="spacer"></span>
                 <button class="btn btn-ghost btn-sm" onclick="dismissW(${i})">Dismiss</button>
@@ -539,6 +538,56 @@ function renderDetail() {
         } else {
             html += `<p style="font-size:12px;color:var(--text3);margin-top:10px">No routes configured.</p>`;
         }
+    } else if (d.type === 'scan') {
+        const scanData = d.data || {};
+        const findings = scanData.findings || [];
+        const sum = scanData.sum || {};
+        const scanDir = scanData.dir || '';
+        const ts = scanData.ts || '';
+
+        html += `<div style="margin-bottom:16px;padding:14px;background:rgba(14,165,233,0.06);border:1px solid rgba(14,165,233,0.15);border-radius:8px">
+            <div style="display:flex;align-items:center;gap:10px">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                <div>
+                    <div style="font-size:12px;font-weight:600;color:var(--text)">Scanned: ${scanDir}</div>
+                    <div style="font-size:11px;color:var(--text3)">${ts}</div>
+                </div>
+            </div>
+        </div>`;
+
+        if (findings.length === 0) {
+            html += `<div style="text-align:center;padding:40px"><div style="font-size:24px;color:var(--green);margin-bottom:8px">&#10003;</div><div style="font-size:14px;font-weight:600;color:var(--green)">No issues found</div></div>`;
+        } else {
+            const sevOrder = { 'Critical': 0, 'High': 1, 'Medium': 2, 'Low': 3 };
+            const sorted = [...findings].sort((a, b) => (sevOrder[a.severity] ?? 4) - (sevOrder[b.severity] ?? 4));
+
+            html += `<div style="display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap">
+                ${sum.critical ? `<div style="padding:8px 14px;background:rgba(252,165,165,0.1);border:1px solid rgba(252,165,165,0.2);border-radius:8px;text-align:center"><div style="font-size:18px;font-weight:700;color:var(--red)">${sum.critical}</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase">Critical</div></div>` : ''}
+                ${sum.high ? `<div style="padding:8px 14px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.2);border-radius:8px;text-align:center"><div style="font-size:18px;font-weight:700;color:var(--orange)">${sum.high}</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase">High</div></div>` : ''}
+                ${sum.medium ? `<div style="padding:8px 14px;background:rgba(250,204,21,0.1);border:1px solid rgba(250,204,21,0.2);border-radius:8px;text-align:center"><div style="font-size:18px;font-weight:700;color:var(--yellow)">${sum.medium}</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase">Medium</div></div>` : ''}
+                ${sum.low ? `<div style="padding:8px 14px;background:rgba(90,122,150,0.1);border:1px solid rgba(90,122,150,0.2);border-radius:8px;text-align:center"><div style="font-size:18px;font-weight:700;color:var(--text3)">${sum.low}</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase">Low</div></div>` : ''}
+                <div style="padding:8px 14px;background:rgba(14,165,233,0.06);border:1px solid rgba(14,165,233,0.15);border-radius:8px;text-align:center"><div style="font-size:18px;font-weight:700;color:var(--blue)">${findings.length}</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase">Total</div></div>
+            </div>`;
+
+            sorted.forEach((f, i) => {
+                const cls = f.severity === 'Critical' ? 'crit' : f.severity === 'High' ? 'high' : 'med';
+                html += `<div class="warn ${cls}" style="margin-bottom:8px">
+                    <div class="warn-head">
+                        <div class="warn-badge ${cls}">${f.severity === 'Critical' ? '!!' : f.severity === 'High' ? '!' : 'i'}</div>
+                        <div style="flex:1;min-width:0">
+                            <div class="warn-title">${f.message || ''}</div>
+                            <div class="warn-file">${f.file ? f.file.split(/[\\/]/).pop() : ''}${f.line ? ':' + f.line : ''}</div>
+                        </div>
+                        <span class="st st-${cls === 'crit' ? 'crit' : cls === 'high' ? 'warn' : 'info'}">${f.severity || 'Info'}</span>
+                    </div>
+                    <div class="warn-body">
+                        <div class="warn-explain">${f.simple_explanation || ''}</div>
+                        ${f.matched ? `<div style="margin-top:6px;font-family:monospace;font-size:11px;padding:6px 10px;background:rgba(0,0,0,0.2);border-radius:4px;color:var(--red);word-break:break-all">${f.matched}</div>` : ''}
+                        ${f.fix ? `<div style="margin-top:8px;font-size:12px;color:var(--green)"><strong>Fix:</strong> ${f.fix}</div>` : ''}
+                    </div>
+                </div>`;
+            });
+        }
     }
 
     html += `</div>`;
@@ -691,7 +740,7 @@ function pServices() {
             </div>
             <div class="card svc-card" onclick="showSpecificScan('codereview')" style="cursor:pointer;text-align:center;padding:18px">
                 <div style="font-size:11px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">AI Review</div>
-                <div style="font-size:11px;color:var(--text3)">Ollama-powered code audit</div>
+                <div style="font-size:11px;color:var(--text3)">AI-powered code audit</div>
             </div>
         </div>
         <div id="auditResults"></div>
@@ -1077,8 +1126,8 @@ async function browseScanDirModal() {
 function showSpecificScan(type) {
     const label = SCAN_LABELS[type] || type;
     if (type === 'codereview') {
-        if (!S.ollama.available) {
-            toast('AI Code Review requires Ollama. Start Ollama and load a model.', 'error');
+        if (!S.ai.available) {
+            toast('AI Code Review requires ASI:One. Add your API key in Settings.', 'error');
             return;
         }
     }
@@ -1148,7 +1197,7 @@ function renderScanResults(findings, label, scannedDir) {
                 const cls = f.severity === 'Critical' ? 'crit' : f.severity === 'High' ? 'high' : 'med';
                 const canAutoFix = AUTO_FIXABLE.has(f.check);
                 const needsAI = !canAutoFix;
-                const ollamaOk = S.ollama.available;
+                const ollamaOk = S.ai.available;
                 return `
                 <div class="warn ${cls}" style="margin-bottom:8px" id="finding-${i}">
                     <div class="warn-head">
@@ -1175,7 +1224,7 @@ function renderScanResults(findings, label, scannedDir) {
                                     AI Fix
                                 </button>
                             ` : needsAI && !ollamaOk ? `
-                                <span style="font-size:11px;color:var(--text3);font-style:italic">Connect Ollama for AI fix</span>
+                                <span style="font-size:11px;color:var(--text3);font-style:italic">Connect ASI:One for AI fix</span>
                             ` : ''}
                         </div>
                         <div id="fixStatus-${i}" style="margin-top:8px"></div>
@@ -1356,8 +1405,13 @@ function showScanDetail(scanId) {
     if (!scan) return;
     const findings = scan.findings || [];
     const dir = scan.directory || '';
-    renderScanResults(findings, 'Security Scan', dir);
-    nav('services');
+    const sum = scan.summary || {};
+    const ts = scan.timestamp ? new Date(scan.timestamp * 1000).toLocaleString() : '';
+    const dirShort = dir.split(/[\\/]/).pop() || dir;
+
+    // Render scan detail into a full-screen modal
+    S.detailData = { type: 'scan', name: `Scan: ${dirShort}`, loading: false, data: { scan, findings, dir, sum, ts, dirShort } };
+    render();
 }
 
 // ═══ Ask AI ═══════════════════════════════════
@@ -1366,7 +1420,7 @@ const chatHistory = [];
 
 function pAskAI() {
     const el = $('p-askai');
-    const ollamaOk = S.ollama.available;
+    const ollamaOk = S.ai.available;
 
     el.innerHTML = `
         <div style="max-width:700px;margin:0 auto">
@@ -1374,8 +1428,8 @@ function pAskAI() {
             <div class="banner" style="margin-bottom:16px">
                 <div class="banner-icon" style="background:var(--blue-dim);color:var(--blue)">i</div>
                 <div class="banner-text">
-                    <div class="banner-title">Ollama not connected</div>
-                    <div class="banner-desc">Start Ollama and load a model to use the AI assistant. Go to Settings to configure.</div>
+                    <div class="banner-title">ASI:One not connected</div>
+                    <div class="banner-desc">Add your API key in Settings to use the AI assistant.</div>
                 </div>
                 <button class="btn btn-glow btn-sm" onclick="nav('settings')">Settings</button>
             </div>` : ''}
@@ -1403,7 +1457,7 @@ function pAskAI() {
                         <h3 style="font-size:16px;color:var(--text2);margin-bottom:6px">Nimbus AI Assistant</h3>
                         <p style="font-size:12px;max-width:360px;margin:0 auto;line-height:1.5">
                             Ask anything about your Cloudflare setup, security issues, or deployments.
-                            ${ollamaOk ? `Connected to <strong>${S.ollama.model}</strong>.` : 'Start Ollama to begin.'}
+                            ${ollamaOk ? `Connected to <strong>ASI:One</strong>.` : 'Add your API key to begin.'}
                         </p>
                         <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin-top:16px">
                             <button class="btn btn-ghost btn-sm" onclick="quickAsk('What security issues do I have?')">Security issues?</button>
@@ -1430,7 +1484,7 @@ function pAskAI() {
                     gap: 8px;
                     background: rgba(0,0,0,0.1);
                 ">
-                    <input class="inp" id="chatInput" placeholder="${ollamaOk ? 'Ask about your Cloudflare setup...' : 'Connect Ollama first...'}"
+                    <input class="inp" id="chatInput" placeholder="${ollamaOk ? 'Ask about your Cloudflare setup...' : 'Add API key in Settings first...'}"
                         ${ollamaOk ? '' : 'disabled'}
                         onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"
                         style="flex:1" />
@@ -1468,7 +1522,7 @@ async function sendChat() {
     const input = $('chatInput');
     const send = $('chatSend');
     const q = input?.value?.trim();
-    if (!q || !S.ollama.available) return;
+    if (!q || !S.ai.available) return;
 
     chatHistory.push({ role: 'user', content: q });
     input.value = '';
@@ -1493,7 +1547,6 @@ async function sendChat() {
 
 async function pSettings() {
     const el = $('p-settings');
-    let models = S.ollama.models || [];
 
     el.innerHTML = `
         <div class="set-group">
@@ -1507,28 +1560,17 @@ async function pSettings() {
         </div>
 
         <div class="set-group">
-            <div class="set-label">Ollama AI Integration</div>
-            <div class="set-desc">Connect to a local Ollama instance for AI-powered code analysis.</div>
+            <div class="set-label">ASI:One AI Integration</div>
+            <div class="set-desc">Cloud-powered AI assistant for security analysis and chat. Get your API key from <a href="https://asi1.ai" target="_blank" style="color:var(--blue)">asi1.ai</a></div>
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-                <div class="ai-dot ${S.ollama.available ? 'on' : ''}"></div>
-                <span style="font-size:13px">${S.ollama.available ? `Connected \u2014 ${S.ollama.model}` : 'Not connected'}</span>
+                <div class="ai-dot ${S.ai.available ? 'on' : ''}"></div>
+                <span style="font-size:13px">${S.ai.available ? 'Connected' : 'Not connected'}</span>
             </div>
-            ${models.length > 0 ? `
-            <div style="margin-top:10px">
-                ${(() => { const { free, paid } = classifyModels(models); return `
-                ${free.length > 0 ? `
-                <div class="set-label" style="font-size:11px;color:var(--green);margin-bottom:6px">FREE MODELS</div>
-                <div class="set-opts" style="margin-bottom:12px">
-                    ${free.map(m => `<button class="set-opt ${S.ollama.model === m ? 'on' : ''}" onclick="pickModel('${m}')">${m.replace(/:latest$/, '')}${modelTag(m)}</button>`).join('')}
-                </div>` : ''}
-                ${paid.length > 0 ? `
-                <div class="set-label" style="font-size:11px;color:var(--orange);margin-bottom:6px">PAID MODELS (Cloud)</div>
-                <div class="set-opts">
-                    ${paid.map(m => `<button class="set-opt ${S.ollama.model === m ? 'on' : ''}" onclick="pickModel('${m}')">${m.replace(/:latest$/, '')}${modelTag(m)}</button>`).join('')}
-                </div>` : ''}
-                `; })()}
-            </div>` : `
-            <p style="font-size:12px;color:var(--text3)">Install Ollama from <a href="https://ollama.ai" target="_blank" style="color:var(--blue)">ollama.ai</a> and run <code style="background:rgba(0,0,0,0.3);padding:2px 6px;border-radius:4px">ollama serve</code> to enable AI features.</p>`}
+            <div style="display:flex;gap:8px;align-items:center">
+                <input class="inp" id="asiKeyInput" type="password" placeholder="Enter your ASI:One API key" style="flex:1" value="">
+                <button class="btn btn-glow btn-sm" onclick="saveASIKey()">Save Key</button>
+            </div>
+            <p style="font-size:11px;color:var(--text3);margin-top:8px">Your key is stored locally and never shared.</p>
         </div>
 
         <div class="set-group">
@@ -1544,7 +1586,18 @@ async function pSettings() {
 
 async function setAud(a) { S.audience = a; await API.call('set_audience', a); pSettings(); toast(`Explanations set to ${a}`, 'info'); }
 async function unignore(c) { await API.call('unignore_check', c); const r = await API.call('get_always_ignored'); if (r.success) S.alwaysIgnored = r.data; pSettings(); toast(`"${c}" warnings will show again`, 'info'); }
-async function pickModel(m) { await API.call('ollama_set_model', m); S.ollama.model = m; S.ollama.available = true; $('ai-dot').className = 'ai-dot on'; $('ai-label').textContent = `AI: ${m}`; pSettings(); toast(`Using model: ${m}`, 'success'); }
+async function saveASIKey() {
+    const key = $('asiKeyInput')?.value?.trim();
+    if (!key) { toast('Enter an API key', 'error'); return; }
+    const r = await API.call('set_ai_key', key);
+    if (r?.success) {
+        S.ai.available = r.available;
+        $('ai-dot').className = `ai-dot ${r.available ? 'on' : ''}`;
+        $('ai-label').textContent = r.available ? 'AI: ASI:One' : 'AI: offline';
+        pSettings();
+        toast(r.available ? 'ASI:One connected!' : 'Key saved but connection failed', r.available ? 'success' : 'error');
+    }
+}
 
 // ═══ Data Loading (Parallel) ══════════════════
 
@@ -1557,7 +1610,7 @@ const LOAD_STEPS = [
     'Fetching secrets',
     'Running security scan',
     'Loading warning history',
-    'Checking Ollama AI',
+    'Checking ASI:One AI',
     'Fetching Workers'
 ];
 
@@ -1577,7 +1630,7 @@ async function refresh(silent = false) {
         API.call('list_secrets'),
         API.call('security_scan', S.scanPath || '.'),
         API.call('get_warning_history'),
-        API.call('ollama_status'),
+        API.call('ai_status'),
         API.call('get_always_ignored'),
         API.call('list_workers')
     ];
@@ -1612,13 +1665,12 @@ async function refresh(silent = false) {
     S.hist = get(results[6], { shown: [], ignored: [], fixed: [], stats: {} });
 
     if (results[7].status === 'fulfilled' && results[7].value?.success) {
-        S.ollama.available = results[7].value.data.available;
-        S.ollama.model = results[7].value.data.model;
-        S.ollama.models = results[7].value.data.models || [];
+        S.ai.available = results[7].value.data.available;
+        S.ai.model = results[7].value.data.model;
         const aiDot = $('ai-dot');
         const aiLabel = $('ai-label');
-        if (aiDot) aiDot.className = `ai-dot ${S.ollama.available ? 'on' : ''}`;
-        if (aiLabel) aiLabel.textContent = S.ollama.available ? `AI: ${S.ollama.model}` : 'AI: offline';
+        if (aiDot) aiDot.className = `ai-dot ${S.ai.available ? 'on' : ''}`;
+        if (aiLabel) aiLabel.textContent = S.ai.available ? 'AI: ASI:One' : 'AI: offline';
     }
 
     S.alwaysIgnored = get(results[8], []);

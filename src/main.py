@@ -12,7 +12,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
 
 from backend.wrangler import WranglerCLI, SecurityMonitor
-from backend.warnings import WarningManager, OllamaClient, GLOSSARY, get_glossary, explain_term
+from backend.warnings import WarningManager, ASI1Client, GLOSSARY, get_glossary, explain_term
 
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 INDEX_HTML = FRONTEND_DIR / "index.html"
@@ -48,23 +48,20 @@ class Bridge(QObject):
     _CACHE_FILE = _CONFIG_DIR / "project_cache.json"
 
     def __init__(self, cli: WranglerCLI, monitor: SecurityMonitor,
-                 warning_mgr: WarningManager, ollama: OllamaClient, parent=None):
+                 warning_mgr: WarningManager, ai_client: ASI1Client, parent=None):
         super().__init__(parent)
         self.cli = cli
         self.monitor = monitor
         self.warning_mgr = warning_mgr
-        self.ollama = ollama
+        self.ai = ai_client
         self._workers: list[Worker] = []
         self._pending: dict[str, callable] = {}
         self._main_window = None
         self._config = self._load_config()
-        # Load saved Ollama model from config
-        saved_model = self._config.get("settings", {}).get("ollama_model", "")
-        if saved_model:
-            self.ollama._model = saved_model
-        saved_url = self._config.get("settings", {}).get("ollama_url", "")
-        if saved_url:
-            self.ollama.base_url = saved_url
+        # Load saved ASI:One API key from config
+        saved_key = self._config.get("settings", {}).get("asi1_api_key", "")
+        if saved_key:
+            self.ai.api_key = saved_key
 
     def set_main_window(self, win):
         self._main_window = win
@@ -270,9 +267,9 @@ class Bridge(QObject):
     def ai_generate_fix(self, finding_json: str, project_path: str) -> str:
         try:
             finding = json.loads(finding_json)
-            if not self.ollama or not self.ollama.is_available():
-                return json.dumps({"success": False, "error": "Ollama not available"})
-            result = self.cli.ai_generate_fix(finding, self.ollama)
+            if not self.ai or not self.ai.is_available():
+                return json.dumps({"success": False, "error": "ASI:One not available. Add your API key in Settings."})
+            result = self.cli.ai_generate_fix(finding, self.ai)
             return json.dumps(result)
         except Exception as e:
             return json.dumps({"success": False, "error": str(e)})
@@ -305,7 +302,7 @@ class Bridge(QObject):
     def full_security_audit(self, directory: str) -> str:
         call_id = "fullaudit"
         def _audit():
-            result = self.cli.full_security_audit(directory, self.ollama)
+            result = self.cli.full_security_audit(directory, self.ai)
             # Save scan results to history
             if result.get("success"):
                 self.warning_mgr.save_scan_result(
@@ -333,67 +330,14 @@ class Bridge(QObject):
         self._run_worker(call_id, self.warning_mgr.get_always_ignored)
         return json.dumps({"success": True, "call_id": call_id})
 
-    @Slot(result=str)
-    def ollama_status(self) -> str:
-        call_id = "ollama_status"
-        def _check():
-            try:
-                req = urllib.request.Request(f"{self.ollama.base_url}/api/tags", method="GET")
-                with urllib.request.urlopen(req, timeout=3) as resp:
-                    data = json.loads(resp.read())
-                    models = [m.get("name", "") for m in data.get("models", [])]
-                    if models and not self.ollama._model:
-                        self.ollama._model = models[0]
-                    self.ollama._available = True
-                    return {"success": True, "data": {
-                        "available": True,
-                        "model": self.ollama._model or (models[0] if models else "none"),
-                        "models": models
-                    }}
-            except Exception:
-                self.ollama._available = False
-                return {"success": True, "data": {"available": False, "model": "none", "models": []}}
-        self._run_worker(call_id, _check)
-        return json.dumps({"success": True, "call_id": call_id})
-
-    @Slot(result=str)
-    def ollama_models(self) -> str:
-        call_id = "ollama_models"
-        def _fetch():
-            try:
-                req = urllib.request.Request(f"{self.ollama.base_url}/api/tags", method="GET")
-                with urllib.request.urlopen(req, timeout=3) as resp:
-                    data = json.loads(resp.read())
-                    models = [m.get("name", "") for m in data.get("models", [])]
-                    return {"success": True, "data": models}
-            except Exception:
-                return {"success": True, "data": []}
-        self._run_worker(call_id, _fetch)
-        return json.dumps({"success": True, "call_id": call_id})
-
-    @Slot(str, result=str)
-    def ollama_set_model(self, model: str) -> str:
-        self.ollama._model = model
-        self.ollama._available = None  # Reset cache so is_available() re-checks
-        self._config.setdefault("settings", {})["ollama_model"] = model
-        self._save_config()
-        return json.dumps({"success": True})
-
-    @Slot(str, result=str)
-    def ollama_set_url(self, url: str) -> str:
-        self.ollama.base_url = url.rstrip("/")
-        self.ollama._available = None
-        self.ollama._model = None
-        self._config.setdefault("settings", {})["ollama_url"] = url.rstrip("/")
-        self._save_config()
-        return self.ollama_status()
+    # ── ASI:One AI ──────────────────────────────────────
 
     @Slot(str, result=str)
     def ask_ai(self, question: str) -> str:
         call_id = "ask_ai"
         def _ask():
-            if not self.ollama.is_available():
-                return {"success": False, "error": "Ollama not connected. Start Ollama and load a model."}
+            if not self.ai.is_available():
+                return {"success": False, "error": "ASI:One not connected. Add your API key in Settings."}
             warnings_data = self.warning_mgr.get_warning_history()
             warnings = warnings_data.get("shown", []) if isinstance(warnings_data, dict) else []
             pages = self.cli.list_pages_projects()
@@ -402,7 +346,7 @@ class Bridge(QObject):
             r2 = self.cli.list_r2_buckets()
             workers = self.cli.list_workers()
             audience = self.warning_mgr.get_audience()
-            response = self.ollama.ask_ai(
+            response = self.ai.ask_ai(
                 question,
                 warnings=warnings,
                 deployments=pages,
@@ -412,6 +356,77 @@ class Bridge(QObject):
             return {"success": True, "data": {"response": response}}
         self._run_worker(call_id, _ask)
         return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(str, result=str)
+    def set_ai_key(self, key: str) -> str:
+        self.ai.api_key = key
+        self._config.setdefault("settings", {})["asi1_api_key"] = key
+        self._save_config()
+        return json.dumps({"success": True, "available": self.ai.is_available()})
+
+    @Slot(result=str)
+    def ai_status(self) -> str:
+        return json.dumps({"success": True, "data": {
+            "available": self.ai.is_available(),
+            "model": self.ai.get_model(),
+            "has_key": bool(self.ai.api_key)
+        }})
+
+    # ── Ollama (commented out — replaced by ASI:One) ─────
+    # @Slot(result=str)
+    # def ollama_status(self) -> str:
+    #     call_id = "ollama_status"
+    #     def _check():
+    #         try:
+    #             req = urllib.request.Request(f"{self.ai.base_url}/api/tags", method="GET")
+    #             with urllib.request.urlopen(req, timeout=3) as resp:
+    #                 data = json.loads(resp.read())
+    #                 models = [m.get("name", "") for m in data.get("models", [])]
+    #                 if models and not self.ai._model:
+    #                     self.ai._model = models[0]
+    #                 self.ai._available = True
+    #                 return {"success": True, "data": {
+    #                     "available": True,
+    #                     "model": self.ai._model or (models[0] if models else "none"),
+    #                     "models": models
+    #                 }}
+    #         except Exception:
+    #             self.ai._available = False
+    #             return {"success": True, "data": {"available": False, "model": "none", "models": []}}
+    #     self._run_worker(call_id, _check)
+    #     return json.dumps({"success": True, "call_id": call_id})
+    #
+    # @Slot(result=str)
+    # def ollama_models(self) -> str:
+    #     call_id = "ollama_models"
+    #     def _fetch():
+    #         try:
+    #             req = urllib.request.Request(f"{self.ai.base_url}/api/tags", method="GET")
+    #             with urllib.request.urlopen(req, timeout=3) as resp:
+    #                 data = json.loads(resp.read())
+    #                 models = [m.get("name", "") for m in data.get("models", [])]
+    #                 return {"success": True, "data": models}
+    #         except Exception:
+    #             return {"success": True, "data": []}
+    #     self._run_worker(call_id, _fetch)
+    #     return json.dumps({"success": True, "call_id": call_id})
+    #
+    # @Slot(str, result=str)
+    # def ollama_set_model(self, model: str) -> str:
+    #     self.ai._model = model
+    #     self.ai._available = None
+    #     self._config.setdefault("settings", {})["ollama_model"] = model
+    #     self._save_config()
+    #     return json.dumps({"success": True})
+    #
+    # @Slot(str, result=str)
+    # def ollama_set_url(self, url: str) -> str:
+    #     self.ai.base_url = url.rstrip("/")
+    #     self.ai._available = None
+    #     self.ai._model = None
+    #     self._config.setdefault("settings", {})["ollama_url"] = url.rstrip("/")
+    #     self._save_config()
+    #     return self.ai_status()
 
     @Slot(str, str, result=str)
     def deploy(self, deploy_type: str, target: str) -> str:
@@ -619,15 +634,15 @@ class Bridge(QObject):
     @Slot(str, result=str)
     def explain_term(self, term: str) -> str:
         audience = self.warning_mgr.get_audience()
-        if self.ollama.is_available():
-            explanation = self.ollama.explain_term(term, audience)
+        if self.ai.is_available():
+            explanation = self.ai.explain_term(term, audience)
         else:
             explanation = explain_term(term, audience)
         return json.dumps({"success": True, "data": {"term": term, "explanation": explanation}})
 
     @Slot(str, result=str)
     def analyze_finding(self, finding_json: str) -> str:
-        if not self.ollama.is_available():
+        if not self.ai.is_available():
             return json.dumps({"success": False, "error": "Ollama not connected"})
         try:
             finding = json.loads(finding_json)
@@ -640,7 +655,7 @@ class Bridge(QObject):
                 file_content = Path(file_path).read_text(encoding="utf-8", errors="ignore")
             except Exception:
                 pass
-        result = self.ollama.analyze_finding(finding, file_content)
+        result = self.ai.analyze_finding(finding, file_content)
         return json.dumps({"success": True, "data": result})
 
     @Slot(str, result=str)
@@ -650,8 +665,8 @@ class Bridge(QObject):
         except json.JSONDecodeError:
             return json.dumps({"success": False, "error": "Invalid finding data"})
         audience = self.warning_mgr.get_audience()
-        if self.ollama.is_available():
-            explanation = self.ollama.explain_finding(finding, audience)
+        if self.ai.is_available():
+            explanation = self.ai.explain_finding(finding, audience)
         else:
             explanation = finding.get("simple_explanation", finding.get("message", ""))
         return json.dumps({"success": True, "data": {"explanation": explanation}})
@@ -704,10 +719,20 @@ def main():
 
     cli = WranglerCLI()
     warning_mgr = WarningManager()
-    ollama = OllamaClient()
+    ai_client = ASI1Client()
+    # Load saved API key
+    try:
+        cfg_file = Path(os.environ.get("APPDATA", "~")) / ".cloudguard" / "config.json"
+        if cfg_file.exists():
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            saved_key = cfg.get("settings", {}).get("asi1_api_key", "")
+            if saved_key:
+                ai_client.api_key = saved_key
+    except Exception:
+        pass
     monitor = SecurityMonitor(cli, warning_mgr)
 
-    bridge = Bridge(cli, monitor, warning_mgr, ollama)
+    bridge = Bridge(cli, monitor, warning_mgr, ai_client)
     window = MainWindow(bridge)
 
     sys.exit(app.exec())

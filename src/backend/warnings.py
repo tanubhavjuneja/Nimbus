@@ -1,4 +1,4 @@
-"""Warning management system with history, preferences, and Ollama-powered smart analysis."""
+"""Warning management system with history, preferences, and ASI:One-powered smart analysis."""
 
 import json
 import time
@@ -282,46 +282,26 @@ class WarningManager:
         return active
 
 
-# ── Ollama Integration ────────────────────────────────────
+# ── ASI:One Integration ─────────────────────────────────
 
-class OllamaClient:
-    """Lightweight Ollama client for codebase analysis and explanations."""
+class ASI1Client:
+    """ASI:One API client (OpenAI-compatible)."""
 
-    def __init__(self, base_url: str = "http://localhost:11434"):
-        self.base_url = base_url
-        self._available: Optional[bool] = None
-        self._model: Optional[str] = None
+    API_URL = "https://api.asi1.ai/v1/chat/completions"
+    DEFAULT_KEY = "sk_ddebad0d11ac41d1b1b4f4b65cd5ccb7de3f28ee1fc341c68851f8a30b69f4fe"
+
+    def __init__(self, api_key: str = ""):
+        self.api_key = api_key or self.DEFAULT_KEY
+        self._model = "asi1"
 
     def is_available(self) -> bool:
-        if self._available is not None:
-            return self._available
-        try:
-            import urllib.request
-            req = urllib.request.Request(f"{self.base_url}/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                data = json.loads(resp.read())
-                models = data.get("models", [])
-                if models:
-                    self._model = models[0].get("name", "")
-                    self._available = True
-                else:
-                    self._available = False
-        except Exception:
-            self._available = False
-        return self._available
-
-    def recheck(self):
-        """Force re-check of availability."""
-        self._available = None
-        return self.is_available()
+        return bool(self.api_key)
 
     def get_model(self) -> str:
-        if not self._model:
-            self.is_available()
-        return self._model or "none"
+        return self._model
 
     def _chat(self, prompt: str, context: str = "") -> str:
-        if not self.is_available():
+        if not self.api_key:
             return ""
         try:
             import urllib.request
@@ -337,20 +317,21 @@ class OllamaClient:
             }).encode("utf-8")
 
             req = urllib.request.Request(
-                f"{self.base_url}/api/chat",
+                self.API_URL,
                 data=payload,
                 method="POST",
-                headers={"Content-Type": "application/json"}
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}"
+                }
             )
             with urllib.request.urlopen(req, timeout=60) as resp:
                 data = json.loads(resp.read())
-                return data.get("message", {}).get("content", "")
-        except Exception as e:
-            self._available = None
+                return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        except Exception:
             return ""
 
     def analyze_finding(self, finding: dict, file_content: str = "") -> dict:
-        """Use Ollama to analyze whether a finding is a real issue."""
         check = finding.get("check", "")
         file_path = finding.get("file", "")
         message = finding.get("message", "")
@@ -370,10 +351,9 @@ class OllamaClient:
 
         response = self._chat(prompt, context)
         if not response:
-            return {"is_real_issue": True, "explanation": "Could not analyze with Ollama."}
+            return {"is_real_issue": True, "explanation": "Could not analyze with AI."}
 
         try:
-            # Try to extract JSON from response
             start = response.find("{")
             end = response.rfind("}") + 1
             if start >= 0 and end > start:
@@ -384,23 +364,18 @@ class OllamaClient:
         return {"is_real_issue": True, "explanation": response}
 
     def explain_finding(self, finding: dict, audience: str = "beginner") -> str:
-        """Get a simple explanation of a finding."""
         check = finding.get("check", "")
         message = finding.get("message", "")
-
         context = f"You are a friendly security tutor. The user is a {audience}. Explain clearly and briefly."
-
         prompt = (
             f"Explain this security finding in simple terms:\n"
             f"Finding: {message}\nType: {check}\n\n"
             f"Include: 1) What it means 2) Why it matters 3) What to do about it"
         )
-
         response = self._chat(prompt, context)
         return response or f"This is a {check} security finding. {message}"
 
     def explain_term(self, term: str, audience: str = "beginner") -> str:
-        """Use Ollama to explain a technical term."""
         context = f"You are a patient teacher explaining to a {audience}. Use analogies and simple language."
         prompt = f"Explain '{term}' in the context of web security and cloud deployment. Be concise."
         response = self._chat(prompt, context)
@@ -408,7 +383,6 @@ class OllamaClient:
 
     def ask_ai(self, question: str, warnings: list[dict] = None, deployments: list[dict] = None,
                services: dict = None, audience: str = "beginner") -> str:
-        """Chat with AI that has full context of the user's Cloudflare setup."""
         context_parts = [
             f"You are Nimbus AI, a Cloudflare security assistant for a {audience} user.",
             "You have access to the user's Cloudflare account data. Answer questions about their",
@@ -446,4 +420,81 @@ class OllamaClient:
 
         context = "\n".join(context_parts)
         response = self._chat(question, context)
-        return response or "I couldn't process that question. Make sure Ollama is running and a model is loaded."
+        return response or "I couldn't process that question. Please check your ASI:One API key in Settings."
+
+
+# ── Ollama Integration (commented out — replaced by ASI:One) ──────────
+# class OllamaClient:
+#     """Lightweight Ollama client for codebase analysis and explanations."""
+#
+#     def __init__(self, base_url: str = "http://localhost:11434"):
+#         self.base_url = base_url
+#         self._available: Optional[bool] = None
+#         self._model: Optional[str] = None
+#
+#     def is_available(self) -> bool:
+#         if self._available is not None:
+#             return self._available
+#         try:
+#             import urllib.request
+#             req = urllib.request.Request(f"{self.base_url}/api/tags", method="GET")
+#             with urllib.request.urlopen(req, timeout=3) as resp:
+#                 data = json.loads(resp.read())
+#                 models = data.get("models", [])
+#                 if models:
+#                     self._model = models[0].get("name", "")
+#                     self._available = True
+#                 else:
+#                     self._available = False
+#         except Exception:
+#             self._available = False
+#         return self._available
+#
+#     def recheck(self):
+#         self._available = None
+#         return self.is_available()
+#
+#     def get_model(self) -> str:
+#         if not self._model:
+#             self.is_available()
+#         return self._model or "none"
+#
+#     def _chat(self, prompt: str, context: str = "") -> str:
+#         if not self.is_available():
+#             return ""
+#         try:
+#             import urllib.request
+#             messages = []
+#             if context:
+#                 messages.append({"role": "system", "content": context})
+#             messages.append({"role": "user", "content": prompt})
+#             payload = json.dumps({
+#                 "model": self._model,
+#                 "messages": messages,
+#                 "stream": False
+#             }).encode("utf-8")
+#             req = urllib.request.Request(
+#                 f"{self.base_url}/api/chat",
+#                 data=payload,
+#                 method="POST",
+#                 headers={"Content-Type": "application/json"}
+#             )
+#             with urllib.request.urlopen(req, timeout=60) as resp:
+#                 data = json.loads(resp.read())
+#                 return data.get("message", {}).get("content", "")
+#         except Exception as e:
+#             self._available = None
+#             return ""
+#
+#     def analyze_finding(self, finding: dict, file_content: str = "") -> dict:
+#         ...
+#
+#     def explain_finding(self, finding: dict, audience: str = "beginner") -> str:
+#         ...
+#
+#     def explain_term(self, term: str, audience: str = "beginner") -> str:
+#         ...
+#
+#     def ask_ai(self, question: str, warnings=None, deployments=None,
+#                services=None, audience="beginner") -> str:
+#         ...
