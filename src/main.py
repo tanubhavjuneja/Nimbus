@@ -18,9 +18,30 @@ FRONTEND_DIR = Path(__file__).parent / "frontend"
 INDEX_HTML = FRONTEND_DIR / "index.html"
 
 
+class Worker(QThread):
+    """Runs a callable in a background thread, emits result via signal."""
+    finished = Signal(str, str)  # (call_id, json_result)
+
+    def __init__(self, call_id: str, func, *args, **kwargs):
+        super().__init__()
+        self.call_id = call_id
+        self.func = func
+        self.args = args
+        self.kwargs = kwargs
+
+    def run(self):
+        try:
+            result = self.func(*self.args, **self.kwargs)
+            if isinstance(result, str):
+                self.finished.emit(self.call_id, result)
+            else:
+                self.finished.emit(self.call_id, json.dumps(result))
+        except Exception as e:
+            self.finished.emit(self.call_id, json.dumps({"success": False, "error": str(e)}))
+
+
 class Bridge(QObject):
-    """Python bridge — all methods run in Qt event loop.
-    Heavy operations use QTimer.singleShot to avoid blocking."""
+    """Python bridge — heavy operations run in QThread workers."""
 
     def __init__(self, cli: WranglerCLI, monitor: SecurityMonitor,
                  warning_mgr: WarningManager, ollama: OllamaClient, parent=None):
@@ -29,11 +50,27 @@ class Bridge(QObject):
         self.monitor = monitor
         self.warning_mgr = warning_mgr
         self.ollama = ollama
-        self._js_queue: list[str] = []
+        self._workers: list[Worker] = []
+        self._pending: dict[str, callable] = {}
 
-    def _eval_js(self, js: str):
-        """Queue JS to be evaluated on the page."""
-        self._js_queue.append(js)
+    def _run_worker(self, call_id: str, func, *args, **kwargs):
+        """Run func in a background thread, store callback for JS to poll."""
+        w = Worker(call_id, func, *args, **kwargs)
+        self._workers.append(w)
+        w.finished.connect(self._on_worker_done)
+        w.start()
+        return json.dumps({"success": True, "call_id": call_id})
+
+    def _on_worker_done(self, call_id: str, result: str):
+        self._pending[call_id] = result
+
+    @Slot(str, result=str)
+    def poll_result(self, call_id: str) -> str:
+        """JS polls this to get async results."""
+        if call_id in self._pending:
+            result = self._pending.pop(call_id)
+            return result
+        return json.dumps({"success": False, "pending": True})
 
     @Slot(result=str)
     def check_login(self) -> str:
@@ -43,31 +80,25 @@ class Bridge(QObject):
                 "logged_in": logged_in,
                 "account": self.cli._account_name or ""
             }})
-        except Exception as e:
+        except Exception:
             return json.dumps({"success": True, "data": {"logged_in": False, "account": ""}})
 
     @Slot(result=str)
     def login(self) -> str:
-        """Run wrangler login in a subprocess. Returns immediately."""
         try:
             proc = subprocess.Popen(
                 "wrangler login", shell=True,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 encoding="utf-8", errors="replace"
             )
-            # Don't wait — let the browser OAuth flow happen
-            # Poll briefly for immediate failures (command not found, etc.)
             try:
                 stdout, stderr = proc.communicate(timeout=5)
-                # If we got here quickly, login either succeeded or failed
                 if proc.returncode == 0:
                     self.cli.check_login()
                     return json.dumps({"success": True, "data": {"account": self.cli._account_name or ""}})
                 else:
                     return json.dumps({"success": False, "error": stderr or stdout or "Login failed"})
             except subprocess.TimeoutExpired:
-                # Still running — browser is open, that's expected
-                # Start a background timer to check when it completes
                 self._login_proc = proc
                 QTimer.singleShot(1000, self._poll_login)
                 return json.dumps({"success": True, "data": {"account": "", "waiting": True}})
@@ -75,43 +106,152 @@ class Bridge(QObject):
             return json.dumps({"success": False, "error": str(e)})
 
     def _poll_login(self):
-        """Poll the login process in background."""
         proc = getattr(self, '_login_proc', None)
         if proc is None:
             return
         ret = proc.poll()
         if ret is not None:
-            # Process finished
             self._login_proc = None
             if ret == 0:
                 self.cli.check_login()
         else:
-            # Still running, check again in 2s
             QTimer.singleShot(2000, self._poll_login)
 
-    @Slot(result=str)
-    def list_workers(self) -> str:
-        return json.dumps({"success": True, "data": self.cli.list_workers_from_pages()})
+    @Slot(str, result=str)
+    def list_workers(self, _unused: str = "") -> str:
+        call_id = "workers"
+        self._run_worker(call_id, self.cli.list_workers)
+        return json.dumps({"success": True, "call_id": call_id})
 
     @Slot(result=str)
     def list_pages(self) -> str:
-        return json.dumps({"success": True, "data": self.cli.list_pages_projects()})
+        call_id = "pages"
+        self._run_worker(call_id, self.cli.list_pages_projects)
+        return json.dumps({"success": True, "call_id": call_id})
 
     @Slot(result=str)
     def list_kv(self) -> str:
-        return json.dumps({"success": True, "data": self.cli.list_kv_namespaces()})
+        call_id = "kv"
+        self._run_worker(call_id, self.cli.list_kv_namespaces)
+        return json.dumps({"success": True, "call_id": call_id})
 
     @Slot(result=str)
     def list_r2(self) -> str:
-        return json.dumps({"success": True, "data": self.cli.list_r2_buckets()})
+        call_id = "r2"
+        self._run_worker(call_id, self.cli.list_r2_buckets)
+        return json.dumps({"success": True, "call_id": call_id})
 
     @Slot(result=str)
     def list_d1(self) -> str:
-        return json.dumps({"success": True, "data": self.cli.list_d1_databases()})
+        call_id = "d1"
+        self._run_worker(call_id, self.cli.list_d1_databases)
+        return json.dumps({"success": True, "call_id": call_id})
 
     @Slot(result=str)
     def list_secrets(self) -> str:
-        return json.dumps({"success": True, "data": self.cli.list_secrets()})
+        call_id = "secrets"
+        self._run_worker(call_id, self.cli.list_secrets)
+        return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(str, result=str)
+    def security_scan(self, project_path: str = ".") -> str:
+        call_id = "scan"
+        self._run_worker(call_id, self.cli.scan_local_config, project_path)
+        return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(str, result=str)
+    def scan_secrets(self, directory: str) -> str:
+        call_id = "secretscan"
+        self._run_worker(call_id, self.cli.scan_directory_secrets, directory)
+        return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(result=str)
+    def get_warning_history(self) -> str:
+        call_id = "history"
+        self._run_worker(call_id, self.warning_mgr.get_warning_history)
+        return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(result=str)
+    def get_always_ignored(self) -> str:
+        call_id = "ignored"
+        self._run_worker(call_id, self.warning_mgr.get_always_ignored)
+        return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(result=str)
+    def ollama_status(self) -> str:
+        call_id = "ollama_status"
+        def _check():
+            try:
+                req = urllib.request.Request(f"{self.ollama.base_url}/api/tags", method="GET")
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    data = json.loads(resp.read())
+                    models = [m.get("name", "") for m in data.get("models", [])]
+                    if models and not self.ollama._model:
+                        self.ollama._model = models[0]
+                    self.ollama._available = True
+                    return {"success": True, "data": {
+                        "available": True,
+                        "model": self.ollama._model or (models[0] if models else "none"),
+                        "models": models
+                    }}
+            except Exception:
+                self.ollama._available = False
+                return {"success": True, "data": {"available": False, "model": "none", "models": []}}
+        self._run_worker(call_id, _check)
+        return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(result=str)
+    def ollama_models(self) -> str:
+        call_id = "ollama_models"
+        def _fetch():
+            try:
+                req = urllib.request.Request(f"{self.ollama.base_url}/api/tags", method="GET")
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    data = json.loads(resp.read())
+                    models = [m.get("name", "") for m in data.get("models", [])]
+                    return {"success": True, "data": models}
+            except Exception:
+                return {"success": True, "data": []}
+        self._run_worker(call_id, _fetch)
+        return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(str, result=str)
+    def ollama_set_model(self, model: str) -> str:
+        self.ollama._model = model
+        self.ollama._available = True
+        return json.dumps({"success": True})
+
+    @Slot(str, result=str)
+    def ollama_set_url(self, url: str) -> str:
+        self.ollama.base_url = url.rstrip("/")
+        self.ollama._available = None
+        self.ollama._model = None
+        return self.ollama_status()
+
+    @Slot(str, result=str)
+    def ask_ai(self, question: str) -> str:
+        call_id = "ask_ai"
+        def _ask():
+            if not self.ollama.is_available():
+                return {"success": False, "error": "Ollama not connected. Start Ollama and load a model."}
+            warnings_data = self.warning_mgr.get_warning_history()
+            warnings = warnings_data.get("shown", []) if isinstance(warnings_data, dict) else []
+            pages = self.cli.list_pages_projects()
+            d1 = self.cli.list_d1_databases()
+            kv = self.cli.list_kv_namespaces()
+            r2 = self.cli.list_r2_buckets()
+            workers = self.cli.list_workers()
+            audience = self.warning_mgr.get_audience()
+            response = self.ollama.ask_ai(
+                question,
+                warnings=warnings,
+                deployments=pages,
+                services={"d1": d1, "r2": r2, "kv": kv, "pages": pages, "workers": workers},
+                audience=audience
+            )
+            return {"success": True, "data": {"response": response}}
+        self._run_worker(call_id, _ask)
+        return json.dumps({"success": True, "call_id": call_id})
 
     @Slot(str, str, result=str)
     def deploy(self, deploy_type: str, target: str) -> str:
@@ -198,11 +338,6 @@ class Bridge(QObject):
         result = self.cli.create_pages_project(name)
         return json.dumps(result)
 
-    @Slot(result=str)
-    def list_workers(self) -> str:
-        workers = self.cli.list_workers()
-        return json.dumps({"success": True, "data": workers})
-
     @Slot(str, result=str)
     def delete_pages_project(self, name: str) -> str:
         result = self.cli.delete_pages_project(name)
@@ -225,12 +360,8 @@ class Bridge(QObject):
 
     @Slot(result=str)
     def browse_file(self) -> str:
-        """Open a native file dialog and return the selected path."""
         try:
-            file_path, _ = QFileDialog.getOpenFileName(
-                None, "Select File to Upload", "",
-                "All Files (*)"
-            )
+            file_path, _ = QFileDialog.getOpenFileName(None, "Select File to Upload", "", "All Files (*)")
             if file_path:
                 return json.dumps({"success": True, "path": file_path})
             return json.dumps({"success": False, "error": "No file selected"})
@@ -239,22 +370,13 @@ class Bridge(QObject):
 
     @Slot(result=str)
     def browse_directory(self) -> str:
-        """Open a native directory dialog and return the selected path."""
         try:
-            dir_path = QFileDialog.getExistingDirectory(
-                None, "Select Project Directory", ""
-            )
+            dir_path = QFileDialog.getExistingDirectory(None, "Select Project Directory", "")
             if dir_path:
                 return json.dumps({"success": True, "path": dir_path})
             return json.dumps({"success": False, "error": "No directory selected"})
         except Exception as e:
             return json.dumps({"success": False, "error": str(e)})
-
-    @Slot(str, result=str)
-    def security_scan(self, project_path: str = "") -> str:
-        findings = self.cli.scan_local_config(project_path or ".")
-        active = self.warning_mgr.process_findings(findings)
-        return json.dumps({"success": True, "data": active})
 
     @Slot(str, str, result=str)
     def fix_finding(self, finding_json: str, project_path: str = ".") -> str:
@@ -282,17 +404,14 @@ class Bridge(QObject):
         self.warning_mgr.unignore_check(check_id)
         return json.dumps({"success": True})
 
-    @Slot(result=str)
-    def get_warning_history(self) -> str:
-        return json.dumps({"success": True, "data": self.warning_mgr.get_warning_history()})
+    @Slot(str, result=str)
+    def set_audience(self, audience: str) -> str:
+        self.warning_mgr.set_audience(audience)
+        return json.dumps({"success": True})
 
     @Slot(result=str)
-    def get_always_ignored(self) -> str:
-        return json.dumps({"success": True, "data": self.warning_mgr.get_always_ignored()})
-
-    @Slot(result=str)
-    def get_glossary(self) -> str:
-        return json.dumps({"success": True, "data": GLOSSARY})
+    def get_audience(self) -> str:
+        return json.dumps({"success": True, "data": self.warning_mgr.get_audience()})
 
     @Slot(str, result=str)
     def explain_term(self, term: str) -> str:
@@ -302,26 +421,6 @@ class Bridge(QObject):
         else:
             explanation = explain_term(term, audience)
         return json.dumps({"success": True, "data": {"term": term, "explanation": explanation}})
-
-    @Slot(str, result=str)
-    def ask_ai(self, question: str) -> str:
-        if not self.ollama.is_available():
-            return json.dumps({"success": False, "error": "Ollama not connected. Start Ollama and load a model."})
-        warnings = self.warning_mgr.get_warning_history().get("shown", [])
-        pages = self.cli.list_pages_projects()
-        d1 = self.cli.list_d1_databases()
-        kv = self.cli.list_kv_namespaces()
-        r2 = self.cli.list_r2_buckets()
-        workers = self.cli.list_workers()
-        audience = self.warning_mgr.get_audience()
-        response = self.ollama.ask_ai(
-            question,
-            warnings=warnings,
-            deployments=pages,
-            services={"d1": d1, "r2": r2, "kv": kv, "pages": pages, "workers": workers},
-            audience=audience
-        )
-        return json.dumps({"success": True, "data": {"response": response}})
 
     @Slot(str, result=str)
     def analyze_finding(self, finding_json: str) -> str:
@@ -353,60 +452,6 @@ class Bridge(QObject):
         else:
             explanation = finding.get("simple_explanation", finding.get("message", ""))
         return json.dumps({"success": True, "data": {"explanation": explanation}})
-
-    @Slot(str, result=str)
-    def set_audience(self, audience: str) -> str:
-        self.warning_mgr.set_audience(audience)
-        return json.dumps({"success": True})
-
-    @Slot(result=str)
-    def get_audience(self) -> str:
-        return json.dumps({"success": True, "data": self.warning_mgr.get_audience()})
-
-    @Slot(result=str)
-    def ollama_status(self) -> str:
-        """Fast check — just see if Ollama is reachable."""
-        try:
-            req = urllib.request.Request(f"{self.ollama.base_url}/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                data = json.loads(resp.read())
-                models = [m.get("name", "") for m in data.get("models", [])]
-                if models and not self.ollama._model:
-                    self.ollama._model = models[0]
-                self.ollama._available = True
-                return json.dumps({"success": True, "data": {
-                    "available": True,
-                    "model": self.ollama._model or models[0] if models else "none",
-                    "models": models
-                }})
-        except Exception:
-            self.ollama._available = False
-            return json.dumps({"success": True, "data": {"available": False, "model": "none", "models": []}})
-
-    @Slot(result=str)
-    def ollama_models(self) -> str:
-        """Fetch available Ollama models."""
-        try:
-            req = urllib.request.Request(f"{self.ollama.base_url}/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                data = json.loads(resp.read())
-                models = [m.get("name", "") for m in data.get("models", [])]
-                return json.dumps({"success": True, "data": models})
-        except Exception:
-            return json.dumps({"success": True, "data": []})
-
-    @Slot(str, result=str)
-    def ollama_set_model(self, model: str) -> str:
-        self.ollama._model = model
-        self.ollama._available = True
-        return json.dumps({"success": True})
-
-    @Slot(str, result=str)
-    def ollama_set_url(self, url: str) -> str:
-        self.ollama.base_url = url.rstrip("/")
-        self.ollama._available = None
-        self.ollama._model = None
-        return self.ollama_status()
 
 
 class MainWindow(QWebEngineView):
@@ -451,7 +496,7 @@ class MainWindow(QWebEngineView):
 
 def main():
     app = QApplication(sys.argv)
-    app.setStyleSheet("QWebEngineView { background: #0b1a2e; border: none; }")
+    app.setStyleSheet("QWebEngineView { background: #0e2137; border: none; }")
 
     cli = WranglerCLI()
     warning_mgr = WarningManager()

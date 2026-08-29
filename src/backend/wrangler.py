@@ -317,6 +317,74 @@ class WranglerCLI:
             return {"success": True, "message": f"Redeploy triggered for '{name}'", "output": result.get("raw", "")}
         return {"success": False, "error": result.get("error", "Redeploy failed")}
 
+    # ── Secret Scanner (GitGuardian-style) ────────────────
+
+    SECRET_PATTERNS = [
+        (r'(?i)(?:api[_-]?key|apikey)\s*[:=]\s*["\']([A-Za-z0-9_\-]{16,})["\']', "API Key"),
+        (r'(?i)(?:secret|password|passwd)\s*[:=]\s*["\']([^"\']{8,})["\']', "Secret/Password"),
+        (r'(?i)(?:token|auth_token|access_token|bearer)\s*[:=]\s*["\']([A-Za-z0-9_\-.]{16,})["\']', "Auth Token"),
+        (r'(?i)(?:aws[_-]?access[_-]?key[_-]?id)\s*[:=]\s*["\']?(AKIA[A-Z0-9]{16})["\']?', "AWS Access Key ID"),
+        (r'(?i)(?:aws[_-]?secret[_-]?access[_-]?key)\s*[:=]\s*["\']?([A-Za-z0-9/+=]{40})["\']?', "AWS Secret Key"),
+        (r'(?i)(?:private[_-]?key)\s*[:=]\s*["\']?(-----BEGIN (?:RSA |EC )?PRIVATE KEY-----)["\']?', "Private Key"),
+        (r'ghp_[A-Za-z0-9]{36}', "GitHub Personal Access Token"),
+        (r'gho_[A-Za-z0-9]{36}', "GitHub OAuth Token"),
+        (r'glpat-[A-Za-z0-9\-_]{20,}', "GitLab Personal Access Token"),
+        (r'xox[bpsar]-[A-Za-z0-9\-]{10,}', "Slack Token"),
+        (r'(?i)(?:sk_live|pk_live)_[A-Za-z0-9]{24,}', "Stripe Live Key"),
+        (r'(?i)(?:sk_test|pk_test)_[A-Za-z0-9]{24,}', "Stripe Test Key"),
+        (r'(?i)SK[A-Za-z0-9]{32,}', "Possible Secret Key"),
+        (r'(?i)(?:CLOUDFLARE_API_TOKEN|CF_API_TOKEN)\s*[:=]\s*["\']([A-Za-z0-9_\-]{40,})["\']', "Cloudflare API Token"),
+        (r'(?i)(?:CLOUDFLARE_API_KEY|CF_API_KEY)\s*[:=]\s*["\']([A-Za-z0-9_\-]{32,})["\']', "Cloudflare API Key"),
+        (r'sk-[A-Za-z0-9]{48,}', "OpenAI API Key"),
+        (r'AIza[A-Za-z0-9_\-]{35}', "Google API Key"),
+        (r'(?i)database[_-]?url\s*[:=]\s*["\']((?:postgres|mysql|mongodb)://[^"\']+)["\']', "Database Connection String"),
+        (r'(?i)smtp[_-]?pass(?:word)?\s*[:=]\s*["\']([^"\']{8,})["\']', "SMTP Password"),
+    ]
+
+    IGNORE_DIRS = {'.git', 'node_modules', '__pycache__', '.wrangler', '.next', 'dist', 'build', '.cache', 'venv', '.venv'}
+    IGNORE_EXT = {'.pyc', '.pyo', '.class', '.o', '.so', '.dll', '.exe', '.bin', '.jpg', '.jpeg', '.png', '.gif', '.ico', '.svg', '.woff', '.woff2', '.ttf', '.eot', '.map', '.lock'}
+
+    def scan_directory_secrets(self, directory: str) -> list[dict]:
+        """Scan a directory for exposed secrets and API keys."""
+        findings = []
+        dir_path = Path(directory)
+        if not dir_path.exists():
+            return findings
+        scanned = 0
+        for f in dir_path.rglob("*"):
+            if not f.is_file():
+                continue
+            if f.name in self.IGNORE_EXT or f.suffix.lower in self.IGNORE_EXT:
+                continue
+            if any(part in self.IGNORE_DIRS for part in f.parts):
+                continue
+            if f.stat().st_size > 1_000_000:
+                continue
+            try:
+                content = f.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            scanned += 1
+            for pattern, secret_type in self.SECRET_PATTERNS:
+                for match in re.finditer(pattern, content):
+                    line_no = content[:match.start()].count('\n') + 1
+                    matched_text = match.group(0)[:60]
+                    finding_id = f"{f}:{line_no}:{secret_type}"
+                    if not any(x.get("id") == finding_id for x in findings):
+                        findings.append({
+                            "id": finding_id,
+                            "check": "SecretScan",
+                            "severity": "Critical" if "Private Key" in secret_type or "Live" in secret_type else "High",
+                            "message": f"{secret_type} found in {f.name}",
+                            "simple_explanation": f"A {secret_type.lower()} was found in your code. If this is a real credential, anyone with access to this code can use it.",
+                            "file": str(f),
+                            "line": line_no,
+                            "matched": matched_text,
+                            "terms": ["API Token"],
+                            "fix": "Move this to environment variables or use wrangler secret put."
+                        })
+        return findings
+
     # ── Project Details ───────────────────────────────────
 
     def get_pages_project_details(self, name: str) -> dict:

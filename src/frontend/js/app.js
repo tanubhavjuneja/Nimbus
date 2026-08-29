@@ -5,8 +5,31 @@ const API = {
     init() { if (window.pybridge) this._b = window.pybridge; },
     async call(m, ...a) {
         if (!this._b || !this._b[m]) return { success: false, error: 'Bridge not ready' };
-        try { const r = await this._b[m](...a); return typeof r === 'string' ? JSON.parse(r) : r; }
-        catch (e) { return { success: false, error: String(e) }; }
+        try {
+            const r = await this._b[m](...a);
+            const parsed = typeof r === 'string' ? JSON.parse(r) : r;
+            // If the call returned a call_id, poll for the result
+            if (parsed.call_id) {
+                return await this._poll(parsed.call_id);
+            }
+            return parsed;
+        } catch (e) { return { success: false, error: String(e) }; }
+    },
+    async _poll(callId, attempts = 0) {
+        if (!this._b || !this._b.poll_result) return { success: false, error: 'Poll not ready' };
+        if (attempts > 600) return { success: false, error: 'Timeout waiting for result' };
+        try {
+            const r = await this._b.poll_result(callId);
+            const parsed = typeof r === 'string' ? JSON.parse(r) : r;
+            if (parsed.pending) {
+                await new Promise(res => setTimeout(res, 100));
+                return await this._poll(callId, attempts + 1);
+            }
+            return parsed;
+        } catch (e) {
+            await new Promise(res => setTimeout(res, 100));
+            return await this._poll(callId, attempts + 1);
+        }
     }
 };
 
@@ -531,6 +554,15 @@ function pServices() {
             <div style="font-size:14px;font-weight:600;margin-bottom:6px">Deploy from Directory</div>
             <div style="font-size:12px;color:var(--text3)">Select a local directory with wrangler.toml or package.json to deploy</div>
         </div>
+
+        <div class="sec-head" style="margin-top:20px">
+            <span class="sec-title">Secret Scanner</span>
+            <button class="btn btn-red btn-sm" onclick="showSecretScan()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                Scan Directory
+            </button>
+        </div>
+        <div id="secretScanResults"></div>
     `;
 }
 
@@ -802,6 +834,90 @@ async function showWorkerDetail(name) {
     S.detailData.data = data;
     S.detailData.loading = false;
     render();
+}
+
+// ═══ Secret Scanner ═══════════════════════════
+
+function showSecretScan() {
+    $('modal').innerHTML = `
+        <h3>Scan for Secrets</h3>
+        <p>Scan a directory for exposed API keys, tokens, passwords, and other secrets. Like GitGuardian but local.</p>
+        <div style="margin:16px 0">
+            <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:6px">Directory to Scan</label>
+            <div style="display:flex;gap:8px">
+                <input class="inp" id="scanDir" placeholder="No directory selected" readonly style="flex:1" />
+                <button class="btn btn-glow btn-sm" onclick="browseScanDir()">Browse</button>
+            </div>
+        </div>
+        <div class="modal-acts">
+            <button class="btn btn-ghost" onclick="hideModal()">Cancel</button>
+            <button class="btn btn-red" onclick="runSecretScan()">Scan Now</button>
+        </div>`;
+    $('modalBg').style.display = 'flex';
+}
+
+async function browseScanDir() {
+    const r = await API.call('browse_directory');
+    if (r.success && r.path) $('scanDir').value = r.path;
+}
+
+let _secretScanFindings = [];
+
+async function runSecretScan() {
+    const dir = $('scanDir')?.value?.trim();
+    if (!dir) { toast('Select a directory', 'error'); return; }
+    hideModal();
+    toast('Scanning for secrets...', 'info');
+    const resultsEl = $('secretScanResults');
+    if (resultsEl) resultsEl.innerHTML = '<div style="text-align:center;padding:20px"><span class="spin" style="width:20px;height:20px"></span><div style="font-size:12px;color:var(--text3);margin-top:8px">Scanning files...</div></div>';
+
+    const r = await API.call('scan_secrets', dir);
+    if (!r.success) {
+        if (resultsEl) resultsEl.innerHTML = `<div class="warn med" style="margin-top:12px"><div class="warn-title">Scan failed: ${r.error}</div></div>`;
+        return;
+    }
+
+    const findings = Array.isArray(r.data) ? r.data : [];
+    _secretScanFindings = findings;
+
+    if (findings.length === 0) {
+        if (resultsEl) resultsEl.innerHTML = `
+            <div class="card" style="margin-top:12px;text-align:center;padding:24px;border-color:rgba(126,232,192,0.2)">
+                <div style="font-size:24px;margin-bottom:8px;color:var(--green)">&#10003;</div>
+                <div style="font-size:14px;font-weight:600;color:var(--green)">No secrets found</div>
+                <div style="font-size:12px;color:var(--text3);margin-top:4px">Scanned ${dir.split(/[\\/]/).pop()}</div>
+            </div>`;
+        return;
+    }
+
+    const critCount = findings.filter(f => f.severity === 'Critical').length;
+    const highCount = findings.filter(f => f.severity === 'High').length;
+
+    if (resultsEl) resultsEl.innerHTML = `
+        <div class="card" style="margin-top:12px;border-color:rgba(252,165,165,0.2)">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+                <div style="font-size:24px;color:var(--red)">&#9888;</div>
+                <div>
+                    <div style="font-size:14px;font-weight:600">${findings.length} secret${findings.length !== 1 ? 's' : ''} found</div>
+                    <div style="font-size:12px;color:var(--text3)">${critCount} critical, ${highCount} high</div>
+                </div>
+            </div>
+            ${findings.map(f => `
+            <div class="warn crit" style="margin-bottom:8px">
+                <div class="warn-head">
+                    <div class="warn-badge crit">!!</div>
+                    <div style="flex:1;min-width:0">
+                        <div class="warn-title">${f.message}</div>
+                        <div class="warn-file">${f.file || ''}:${f.line || ''}</div>
+                    </div>
+                    <span class="st st-crit">${f.severity}</span>
+                </div>
+                <div class="warn-body">
+                    <div class="warn-explain">${f.simple_explanation || ''}</div>
+                    ${f.matched ? `<div style="margin-top:6px;font-family:monospace;font-size:11px;padding:6px 10px;background:rgba(0,0,0,0.2);border-radius:4px;color:var(--red);word-break:break-all">${f.matched}</div>` : ''}
+                </div>
+            </div>`).join('')}
+        </div>`;
 }
 
 // ═══ History ═════════════════════════════════
