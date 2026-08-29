@@ -811,6 +811,30 @@ class WranglerCLI:
                 details["tables"] = rows
         return details
 
+    def d1_execute(self, database: str, sql: str) -> dict:
+        """Execute SQL on a D1 database."""
+        args = ["d1", "execute", database, "--command", sql]
+        result = self._run(args, timeout=30)
+        if result["success"]:
+            raw = result.get("raw", "")
+            try:
+                data = json.loads(raw)
+                return {"success": True, "result": data, "raw": raw}
+            except json.JSONDecodeError:
+                return {"success": True, "result": None, "raw": raw}
+        return {"success": False, "error": result.get("error", "Query failed")}
+
+    def d1_execute_file(self, database: str, file_path: str) -> dict:
+        """Execute SQL from a file on a D1 database."""
+        p = Path(file_path)
+        if not p.exists():
+            return {"success": False, "error": f"File not found: {file_path}"}
+        args = ["d1", "execute", database, "--file", str(p)]
+        result = self._run(args, timeout=60)
+        if result["success"]:
+            return {"success": True, "output": result.get("raw", "")}
+        return {"success": False, "error": result.get("error", "Execution failed")}
+
     def get_kv_details(self, namespace_id: str) -> dict:
         details = {"id": namespace_id, "keys": []}
         result = self._run(["kv", "namespace", "key", "list", "--namespace-id", namespace_id])

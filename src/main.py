@@ -426,6 +426,18 @@ class Bridge(QObject):
         details = self.cli.get_d1_details(name)
         return json.dumps({"success": True, "data": details})
 
+    @Slot(str, str, result=str)
+    def d1_execute(self, database: str, sql: str) -> str:
+        call_id = "d1exec"
+        self._run_worker(call_id, self.cli.d1_execute, database, sql)
+        return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(str, str, result=str)
+    def d1_execute_file(self, database: str, file_path: str) -> str:
+        call_id = "d1file"
+        self._run_worker(call_id, self.cli.d1_execute_file, database, file_path)
+        return json.dumps({"success": True, "call_id": call_id})
+
     @Slot(str, result=str)
     def get_kv_details(self, namespace_id: str) -> str:
         details = self.cli.get_kv_details(namespace_id)

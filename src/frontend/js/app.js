@@ -485,6 +485,16 @@ function renderDetail() {
             tables.forEach(t => html += `<span class="detail-tag blue">${t.name || t}</span>`);
             html += `</div></div>`;
         }
+        html += `
+        <div class="detail-section" style="margin-top:14px">
+            <div class="detail-section-title">SQL Query</div>
+            <textarea id="d1SqlInput" class="inp" rows="4" placeholder="SELECT * FROM table_name LIMIT 10;" style="font-family:monospace;font-size:12px;resize:vertical"></textarea>
+            <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
+                <button class="btn btn-glow btn-sm" id="btnD1Exec" onclick="withBtn(this,()=>d1ExecQuery('${d.name || ''}'))">Run Query</button>
+                <button class="btn btn-ghost btn-sm" onclick="d1LoadSchema('${d.name || ''}')">Load Schema</button>
+            </div>
+            <div id="d1QueryResult" style="margin-top:10px"></div>
+        </div>`;
     } else if (d.type === 'r2') {
         const objs = info.objects || [];
         html += `<div class="detail-grid"><div class="detail-stat"><div class="detail-stat-label">Objects</div><div class="detail-stat-value">${objs.length}</div></div></div>`;
@@ -1627,6 +1637,53 @@ function pollLoginStatus() {
             pollLoginStatus();
         }
     }, 3000);
+}
+
+// ═══ D1 SQL Query ═══════════════════════════
+
+function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function d1ExecQuery(dbName) {
+    const sql = $('d1SqlInput')?.value?.trim();
+    if (!sql) { toast('Enter a SQL query', 'error'); return; }
+    const el = $('d1QueryResult');
+    el.innerHTML = '<div style="text-align:center;padding:12px"><span class="spin" style="width:16px;height:16px"></span></div>';
+    const r = await API.call('d1_execute', dbName, sql);
+    if (!r.success) { el.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px">${escHtml(r.error)}</div>`; return; }
+    const result = r.result || r.data?.result;
+    const raw = r.raw || r.data?.raw || '';
+    if (result && typeof result === 'object') {
+        if (Array.isArray(result)) {
+            if (result.length === 0) { el.innerHTML = '<div style="color:var(--text3);font-size:12px">Query returned no results</div>'; return; }
+            const cols = Object.keys(result[0]);
+            el.innerHTML = `<div class="tbl" style="max-height:300px;overflow:auto"><table><thead><tr>${cols.map(c => `<th>${escHtml(c)}</th>`).join('')}</tr></thead><tbody>${result.map(row => `<tr>${cols.map(c => `<td style="font-size:11px;font-family:monospace">${row[c] !== null && row[c] !== undefined ? escHtml(String(row[c])) : '<span style="color:var(--text3)">NULL</span>'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+            <div style="font-size:11px;color:var(--text3);margin-top:6px">${result.length} row${result.length !== 1 ? 's' : ''}</div>`;
+        } else if (result.changes !== undefined) {
+            el.innerHTML = `<div style="color:var(--green);font-size:12px">Query executed. ${result.changes} change${result.changes !== 1 ? 's' : ''}.</div>`;
+        } else {
+            el.innerHTML = `<pre style="font-size:11px;white-space:pre-wrap;background:rgba(0,0,0,0.2);padding:8px;border-radius:6px;color:var(--text)">${escHtml(JSON.stringify(result, null, 2))}</pre>`;
+        }
+    } else if (raw) {
+        el.innerHTML = `<pre style="font-size:11px;white-space:pre-wrap;background:rgba(0,0,0,0.2);padding:8px;border-radius:6px;color:var(--text)">${escHtml(raw)}</pre>`;
+    } else {
+        el.innerHTML = '<div style="color:var(--text3);font-size:12px">No results</div>';
+    }
+}
+
+async function d1LoadSchema(dbName) {
+    const el = $('d1QueryResult');
+    el.innerHTML = '<div style="text-align:center;padding:12px"><span class="spin" style="width:16px;height:16px"></span></div>';
+    const r = await API.call('d1_execute', dbName, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;");
+    if (!r.success) { el.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px">${escHtml(r.error)}</div>`; return; }
+    const result = r.result || r.data?.result;
+    if (Array.isArray(result) && result.length > 0) {
+        el.innerHTML = `<div style="font-size:12px;color:var(--text2);font-weight:600;margin-bottom:6px">Tables</div>` +
+            result.map(t => `<div style="font-size:12px;padding:4px 8px;background:rgba(0,0,0,0.15);border-radius:4px;margin-bottom:4px;font-family:monospace;cursor:pointer;color:var(--blue)" onclick="document.getElementById('d1SqlInput').value='SELECT * FROM ${t.name} LIMIT 50;'">${t.name}</div>`).join('');
+    } else {
+        el.innerHTML = '<div style="color:var(--text3);font-size:12px">No tables found</div>';
+    }
 }
 
 // ═══ Init ═════════════════════════════════════
