@@ -1594,6 +1594,7 @@ async function init() {
         S.loggedIn = true;
         S.account = lr.data.account || 'Unknown';
         updateUI();
+        hideLoading();
 
         // Load local paths from config
         const cached = await API.call('load_cache');
@@ -1615,6 +1616,7 @@ async function init() {
         // Refresh in background (silent)
         refresh(true);
     } else {
+        hideLoading();
         showLoginScreen();
     }
 }
