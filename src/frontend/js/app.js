@@ -146,6 +146,16 @@ function pDashboard() {
     const el = $('p-dashboard');
     const cr = S.warnings.filter(w => w.severity === 'Critical').length;
 
+    // Collect recent deployments from pages
+    const recentDeps = [];
+    (S.pages || []).forEach(p => {
+        if (p.modified) recentDeps.push({ name: p.name, type: 'pages', time: p.modified, url: `https://${p.name}.pages.dev` });
+    });
+    (S.workers || []).forEach(w => {
+        if (w.modified) recentDeps.push({ name: w.name, type: 'worker', time: w.modified, url: null });
+    });
+    recentDeps.sort((a, b) => (b.time || '').localeCompare(a.time || ''));
+
     el.innerHTML = `
         ${cr > 0 ? `
         <div class="banner">
@@ -164,19 +174,54 @@ function pDashboard() {
                 <div class="card-sub">Projects</div>
             </div>
             <div class="card s-blue svc-card" onclick="nav('services')" style="cursor:pointer">
-                <div class="card-head"><span class="card-label">D1</span><div class="card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#72b8fa" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></div></div>
-                <div class="card-num">${S.d1.length}</div>
-                <div class="card-sub">Databases</div>
+                <div class="card-head"><span class="card-label">Workers</span><div class="card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#72b8fa" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div></div>
+                <div class="card-num">${S.workers.length}</div>
+                <div class="card-sub">Deployed</div>
             </div>
             <div class="card s-cyan svc-card" onclick="nav('services')" style="cursor:pointer">
-                <div class="card-head"><span class="card-label">Storage</span><div class="card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7aeef8" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></div></div>
-                <div class="card-num">${S.kv.length + S.r2.length}</div>
-                <div class="card-sub">KV + R2</div>
+                <div class="card-head"><span class="card-label">Databases</span><div class="card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7aeef8" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></div></div>
+                <div class="card-num">${S.d1.length + S.kv.length + S.r2.length}</div>
+                <div class="card-sub">D1 + KV + R2</div>
             </div>
             <div class="card s-purple svc-card" onclick="nav('services')" style="cursor:pointer">
                 <div class="card-head"><span class="card-label">Secrets</span><div class="card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c4b5fd" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg></div></div>
                 <div class="card-num">${S.secrets.length}</div>
                 <div class="card-sub">Worker secrets</div>
+            </div>
+        </div>
+
+        <div class="grid g2" style="margin-bottom:16px">
+            <div class="card">
+                <div class="card-head"><span class="card-label">Recent Deployments</span></div>
+                ${recentDeps.length === 0 ? '<p style="font-size:12px;color:var(--text3)">No recent deployments.</p>' :
+                recentDeps.slice(0, 5).map(d => `
+                <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--glass-border)">
+                    <div style="width:8px;height:8px;border-radius:50%;background:${d.type === 'pages' ? 'var(--green)' : 'var(--blue)'};flex-shrink:0"></div>
+                    <div style="flex:1;min-width:0">
+                        <div style="font-size:12px;font-weight:600">${d.name}</div>
+                        <div style="font-size:10px;color:var(--text3)">${d.type}</div>
+                    </div>
+                    ${d.url ? `<a href="${d.url}" target="_blank" style="font-size:10px;color:var(--blue);text-decoration:none" onclick="event.stopPropagation()">Open</a>` : ''}
+                    <button class="btn btn-ghost btn-sm" onclick="nav('services')" style="font-size:10px">View</button>
+                </div>`).join('')}
+            </div>
+
+            <div class="card">
+                <div class="card-head"><span class="card-label">Security Issues</span></div>
+                ${S.warnings.length === 0 ? '<p style="font-size:12px;color:var(--text3)">No active warnings. All clear!</p>' :
+                S.warnings.slice(0, 5).map((w, i) => {
+                    const cls = w.severity === 'Critical' ? 'crit' : w.severity === 'High' ? 'high' : 'med';
+                    return `
+                    <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--glass-border);cursor:pointer" onclick="nav('warnings')">
+                        <div class="warn-badge ${cls}" style="width:24px;height:24px;font-size:10px;border-radius:6px">${w.severity === 'Critical' ? '!!' : w.severity === 'High' ? '!' : 'i'}</div>
+                        <div style="flex:1;min-width:0">
+                            <div style="font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${w.message}</div>
+                            <div style="font-size:10px;color:var(--text3)">${w.file ? w.file.split(/[\\/]/).pop() : ''}</div>
+                        </div>
+                        <span class="st st-${cls === 'crit' ? 'crit' : cls === 'high' ? 'warn' : 'info'}" style="font-size:9px">${w.severity}</span>
+                    </div>`;
+                }).join('')}
+                ${S.warnings.length > 5 ? `<div style="text-align:center;padding-top:8px"><button class="btn btn-ghost btn-sm" onclick="nav('warnings')">View all ${S.warnings.length} issues</button></div>` : ''}
             </div>
         </div>
 

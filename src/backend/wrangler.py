@@ -6,6 +6,7 @@ import os
 import re
 import time
 import threading
+import urllib.request
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -222,40 +223,85 @@ class WranglerCLI:
             "modified": p.get("modified", "")
         } for p in self.list_pages_projects()]
 
+    def _get_oauth_token(self) -> str:
+        """Get OAuth token, refreshing via wrangler whoami if needed."""
+        config_path = Path(os.environ.get("APPDATA", "")) / "xdg.config" / ".wrangler" / "config" / "default.toml"
+        if not config_path.exists():
+            home = Path.home()
+            config_path = home / ".wrangler" / "config" / "default.toml"
+        if not config_path.exists():
+            return ""
+        try:
+            import datetime
+            content = config_path.read_text(encoding="utf-8")
+            exp_match = re.search(r'expiration_time\s*=\s*"([^"]+)"', content)
+            if exp_match:
+                exp_str = exp_match.group(1)
+                exp_time = datetime.datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+                now = datetime.datetime.now(datetime.timezone.utc)
+                if exp_time < now:
+                    self._run(["whoami"], timeout=15)
+                    content = config_path.read_text(encoding="utf-8")
+            token_match = re.search(r'oauth_token\s*=\s*"([^"]+)"', content)
+            if token_match:
+                return token_match.group(1)
+        except Exception:
+            pass
+        return ""
+
     def list_workers(self) -> list[dict]:
         workers = []
-        result = self._run(["workers", "list", "--format", "json"])
-        if result["success"]:
-            raw = result.get("raw", "")
-            try:
-                data = json.loads(raw)
-                if isinstance(data, list):
-                    return data
-            except json.JSONDecodeError:
-                pass
-            rows = self._parse_table(raw)
-            for r in rows:
-                workers.append({
-                    "name": r.get("Name", r.get("name", "")),
-                    "type": "worker",
-                    "routes": r.get("Routes", r.get("routes", "")),
-                    "modified": r.get("Modified", r.get("modified", ""))
-                })
-        if not workers:
-            result2 = self._run(["deploy", "--dry-run", "--format", "json"], timeout=15)
+        try:
+            token = self._get_oauth_token()
+            if not token:
+                return workers
+            if not self._account_id:
+                self.check_login()
+            if not self._account_id:
+                return workers
+            api_url = f"https://api.cloudflare.com/client/v4/accounts/{self._account_id}/workers/scripts"
+            req = urllib.request.Request(api_url, headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            })
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+                if data.get("success"):
+                    for script in data.get("result", []):
+                        workers.append({
+                            "name": script.get("id", ""),
+                            "type": "worker",
+                            "modified": script.get("modified_on", ""),
+                            "created": script.get("created_on", ""),
+                            "compatibility_date": script.get("compatibility_date", "")
+                        })
+        except Exception:
+            pass
         return workers
 
     def delete_pages_project(self, name: str) -> dict:
-        result = self._run(["pages", "project", "delete", name, "--force"])
+        result = self._run(["pages", "project", "delete", name])
         if result["success"]:
             return {"success": True, "message": f"Pages project '{name}' deleted"}
-        return {"success": False, "error": result.get("error", "Delete failed")}
+        error = result.get("error", "Delete failed")
+        if "--force" in error:
+            result2 = self._run(["pages", "project", "delete", name, "--yes"])
+            if result2["success"]:
+                return {"success": True, "message": f"Pages project '{name}' deleted"}
+            return {"success": False, "error": result2.get("error", "Delete failed")}
+        return {"success": False, "error": error}
 
     def delete_worker(self, name: str) -> dict:
-        result = self._run(["workers", "delete", name, "--force"])
+        result = self._run(["delete", name])
         if result["success"]:
             return {"success": True, "message": f"Worker '{name}' deleted"}
-        return {"success": False, "error": result.get("error", "Delete failed")}
+        error = result.get("error", "Delete failed")
+        if "--force" in error or "Unknown argument" in error:
+            result2 = self._run(["delete", name, "--yes"])
+            if result2["success"]:
+                return {"success": True, "message": f"Worker '{name}' deleted"}
+            return {"success": False, "error": result2.get("error", "Delete failed")}
+        return {"success": False, "error": error}
 
     def get_worker_routes(self, name: str) -> list[dict]:
         result = self._run(["workers", "routes", "list", "--worker-name", name])
