@@ -304,6 +304,26 @@ class Bridge(QObject):
         return json.dumps({"success": True, "data": {"term": term, "explanation": explanation}})
 
     @Slot(str, result=str)
+    def ask_ai(self, question: str) -> str:
+        if not self.ollama.is_available():
+            return json.dumps({"success": False, "error": "Ollama not connected. Start Ollama and load a model."})
+        warnings = self.warning_mgr.get_warning_history().get("shown", [])
+        pages = self.cli.list_pages_projects()
+        d1 = self.cli.list_d1_databases()
+        kv = self.cli.list_kv_namespaces()
+        r2 = self.cli.list_r2_buckets()
+        workers = self.cli.list_workers()
+        audience = self.warning_mgr.get_audience()
+        response = self.ollama.ask_ai(
+            question,
+            warnings=warnings,
+            deployments=pages,
+            services={"d1": d1, "r2": r2, "kv": kv, "pages": pages, "workers": workers},
+            audience=audience
+        )
+        return json.dumps({"success": True, "data": {"response": response}})
+
+    @Slot(str, result=str)
     def analyze_finding(self, finding_json: str) -> str:
         if not self.ollama.is_available():
             return json.dumps({"success": False, "error": "Ollama not connected"})

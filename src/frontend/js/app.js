@@ -50,7 +50,7 @@ function nav(view) {
         warnings: ['Security Warnings', 'Issues that need your attention'],
         services: ['My Services', 'All your Cloudflare resources'],
         history: ['History', 'Past warnings and your decisions'],
-        glossary: ['Learn', 'Understand security terms in plain language'],
+        askai: ['Ask AI', 'Chat with Nimbus AI about your setup'],
         settings: ['Settings', 'Customize Nimbus']
     };
     $('title').textContent = m[view]?.[0] || 'Nimbus';
@@ -834,32 +834,133 @@ function pHist() {
     `;
 }
 
-// ═══ Glossary ════════════════════════════════
+// ═══ Ask AI ═══════════════════════════════════
 
-function pGlossary() {
-    const el = $('p-glossary');
-    const terms = Object.entries(S.glossary);
+const chatHistory = [];
+
+function pAskAI() {
+    const el = $('p-askai');
+    const ollamaOk = S.ollama.available;
+
     el.innerHTML = `
-        <div style="margin-bottom:16px"><input class="inp" placeholder="Search terms... (SSL, WAF, DNS)" oninput="filterGlos(this.value)" /></div>
-        <div id="glosList">${terms.map(([k, g]) => `
-        <div class="glos-card" data-t="${k.toLowerCase()}" onclick="this.querySelector('.glos-detail').classList.toggle('open')">
-            <div class="glos-term">${g.term || k}</div>
-            <div class="glos-simple">${g.simple}</div>
-            <div class="glos-detail">
-                <div class="glos-tech"><strong>Technical:</strong> ${g.technical}</div>
-                <div class="glos-why"><strong>Why it matters:</strong> ${g.why_it_matters}</div>
+        <div style="max-width:700px;margin:0 auto">
+            ${!ollamaOk ? `
+            <div class="banner" style="margin-bottom:16px">
+                <div class="banner-icon" style="background:var(--blue-dim);color:var(--blue)">i</div>
+                <div class="banner-text">
+                    <div class="banner-title">Ollama not connected</div>
+                    <div class="banner-desc">Start Ollama and load a model to use the AI assistant. Go to Settings to configure.</div>
+                </div>
+                <button class="btn btn-glow btn-sm" onclick="nav('settings')">Settings</button>
+            </div>` : ''}
+
+            <div class="chat-container" id="chatContainer" style="
+                background: var(--glass2);
+                border: 1px solid var(--glass-border);
+                border-radius: var(--r);
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+                height: calc(100vh - 180px);
+            ">
+                <div id="chatMessages" style="
+                    flex: 1;
+                    overflow-y: auto;
+                    padding: 20px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 12px;
+                ">
+                    ${chatHistory.length === 0 ? `
+                    <div style="text-align:center;padding:40px 20px;color:var(--text3)">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin-bottom:12px;opacity:0.3"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                        <h3 style="font-size:16px;color:var(--text2);margin-bottom:6px">Nimbus AI Assistant</h3>
+                        <p style="font-size:12px;max-width:360px;margin:0 auto;line-height:1.5">
+                            Ask anything about your Cloudflare setup, security issues, or deployments.
+                            ${ollamaOk ? `Connected to <strong>${S.ollama.model}</strong>.` : 'Start Ollama to begin.'}
+                        </p>
+                        <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin-top:16px">
+                            <button class="btn btn-ghost btn-sm" onclick="quickAsk('What security issues do I have?')">Security issues?</button>
+                            <button class="btn btn-ghost btn-sm" onclick="quickAsk('Summarize my Cloudflare setup')">Summarize setup</button>
+                            <button class="btn btn-ghost btn-sm" onclick="quickAsk('How do I secure my Workers?')">Secure Workers</button>
+                            <button class="btn btn-ghost btn-sm" onclick="quickAsk('What is a D1 database and when should I use it?')">What is D1?</button>
+                        </div>
+                    </div>` : ''}
+                    ${chatHistory.map(m => `
+                    <div class="chat-msg ${m.role === 'user' ? 'user' : 'ai'}">
+                        <div class="chat-avatar">${m.role === 'user' ? 'You' : 'AI'}</div>
+                        <div class="chat-bubble">${formatChatMessage(m.content)}</div>
+                    </div>`).join('')}
+                    <div id="chatTyping" style="display:none" class="chat-msg ai">
+                        <div class="chat-avatar">AI</div>
+                        <div class="chat-bubble"><span class="spin" style="width:14px;height:14px;border-width:1.5px"></span> Thinking...</div>
+                    </div>
+                </div>
+
+                <div style="
+                    padding: 16px;
+                    border-top: 1px solid var(--glass-border);
+                    display: flex;
+                    gap: 8px;
+                    background: rgba(0,0,0,0.1);
+                ">
+                    <input class="inp" id="chatInput" placeholder="${ollamaOk ? 'Ask about your Cloudflare setup...' : 'Connect Ollama first...'}"
+                        ${ollamaOk ? '' : 'disabled'}
+                        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"
+                        style="flex:1" />
+                    <button class="btn btn-glow" id="chatSend" onclick="sendChat()" ${ollamaOk ? '' : 'disabled'}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                    </button>
+                </div>
             </div>
-        </div>`).join('')}</div>
+        </div>
     `;
+
+    scrollChat();
 }
 
-function filterGlos(q) {
-    document.querySelectorAll('.glos-card').forEach(el => el.style.display = el.dataset.t.includes(q.toLowerCase()) ? '' : 'none');
+function formatChatMessage(text) {
+    if (!text) return '';
+    return text
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/`([^`]+)`/g, '<code style="background:rgba(0,0,0,0.3);padding:2px 5px;border-radius:3px;font-size:11px">$1</code>')
+        .replace(/\n/g, '<br>');
 }
 
-async function showTerm(t) {
-    const r = await API.call('explain_term', t);
-    if (r.success) modal(r.data.term || t, r.data.explanation, [{ label: 'Got it', cls: 'btn-glow', fn: 'hideModal()' }]);
+function scrollChat() {
+    const c = $('chatMessages');
+    if (c) setTimeout(() => c.scrollTop = c.scrollHeight, 50);
+}
+
+function quickAsk(q) {
+    $('chatInput').value = q;
+    sendChat();
+}
+
+async function sendChat() {
+    const input = $('chatInput');
+    const send = $('chatSend');
+    const q = input?.value?.trim();
+    if (!q || !S.ollama.available) return;
+
+    chatHistory.push({ role: 'user', content: q });
+    input.value = '';
+    pAskAI();
+
+    const typing = $('chatTyping');
+    if (typing) typing.style.display = 'flex';
+    scrollChat();
+
+    send.disabled = true;
+    const r = await API.call('ask_ai', q);
+    send.disabled = false;
+
+    if (typing) typing.style.display = 'none';
+
+    const answer = r.success ? r.data?.response : (r.error || 'No response');
+    chatHistory.push({ role: 'ai', content: answer });
+    pAskAI();
 }
 
 // ═══ Settings ═════════════════════════════════
@@ -990,7 +1091,7 @@ async function refresh() {
 }
 
 function render() {
-    ({ dashboard: pDashboard, warnings: pWarnings, services: pServices, history: pHist, glossary: pGlossary, settings: pSettings }[S.view] || pDashboard)();
+    ({ dashboard: pDashboard, warnings: pWarnings, services: pServices, history: pHist, askai: pAskAI, settings: pSettings }[S.view] || pDashboard)();
 }
 
 // ═══ Login ════════════════════════════════════
@@ -1099,11 +1200,6 @@ async function init() {
         // Not logged in — show login screen, no dashboard
         showLoginScreen();
     }
-
-    // Load glossary in background
-    API.call('get_glossary').then(gr => {
-        if (gr.success) S.glossary = gr.data || {};
-    }).catch(() => {});
 }
 
 if (window.pybridge) init(); else window._onBridgeReady = init;

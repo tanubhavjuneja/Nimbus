@@ -375,3 +375,45 @@ class OllamaClient:
         prompt = f"Explain '{term}' in the context of web security and cloud deployment. Be concise."
         response = self._chat(prompt, context)
         return response or explain_term(term, audience)
+
+    def ask_ai(self, question: str, warnings: list[dict] = None, deployments: list[dict] = None,
+               services: dict = None, audience: str = "beginner") -> str:
+        """Chat with AI that has full context of the user's Cloudflare setup."""
+        context_parts = [
+            f"You are Nimbus AI, a Cloudflare security assistant for a {audience} user.",
+            "You have access to the user's Cloudflare account data. Answer questions about their",
+            "security issues, deployments, services, and Cloudflare in general.",
+            "Be helpful, clear, and practical. If the user asks about a specific issue, reference it.",
+        ]
+
+        if warnings:
+            context_parts.append("\nActive security issues:")
+            for w in warnings[:10]:
+                severity = w.get("severity", "")
+                message = w.get("message", "")
+                check = w.get("check", "")
+                context_parts.append(f"- [{severity}] {check}: {message}")
+
+        if deployments:
+            context_parts.append("\nRecent deployments:")
+            for d in deployments[:10]:
+                name = d.get("name", "")
+                dtype = d.get("type", "")
+                modified = d.get("modified", d.get("time", ""))
+                context_parts.append(f"- {name} ({dtype}) - last modified: {modified}")
+
+        if services:
+            if services.get("d1"):
+                context_parts.append(f"\nD1 databases: {len(services['d1'])} ({', '.join(d.get('name','') for d in services['d1'][:5])})")
+            if services.get("r2"):
+                context_parts.append(f"R2 buckets: {len(services['r2'])} ({', '.join(b.get('name','') for b in services['r2'][:5])})")
+            if services.get("kv"):
+                context_parts.append(f"KV namespaces: {len(services['kv'])}")
+            if services.get("pages"):
+                context_parts.append(f"Pages projects: {len(services['pages'])} ({', '.join(p.get('name','') for p in services['pages'][:5])})")
+            if services.get("workers"):
+                context_parts.append(f"Workers: {len(services['workers'])} ({', '.join(w.get('name','') for w in services['workers'][:5])})")
+
+        context = "\n".join(context_parts)
+        response = self._chat(question, context)
+        return response or "I couldn't process that question. Make sure Ollama is running and a model is loaded."

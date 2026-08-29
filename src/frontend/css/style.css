@@ -997,3 +997,63 @@ body {
     color: var(--text3);
     margin-top: 14px;
 }
+
+/* ── Chat Messages ────────────────────────── */
+
+.chat-msg {
+    display: flex;
+    gap: 10px;
+    max-width: 85%;
+    animation: fadeUp 0.2s ease;
+}
+
+.chat-msg.user {
+    align-self: flex-end;
+    flex-direction: row-reverse;
+}
+
+.chat-msg.ai {
+    align-self: flex-start;
+}
+
+.chat-avatar {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+
+.chat-msg.user .chat-avatar {
+    background: linear-gradient(135deg, var(--blue), var(--cyan));
+    color: var(--bg);
+}
+
+.chat-msg.ai .chat-avatar {
+    background: linear-gradient(135deg, var(--green), var(--blue));
+    color: var(--bg);
+}
+
+.chat-bubble {
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--text);
+}
+
+.chat-msg.user .chat-bubble {
+    background: linear-gradient(135deg, rgba(114,184,250,0.2), rgba(122,238,248,0.15));
+    border: 1px solid rgba(114,184,250,0.2);
+    border-bottom-right-radius: 4px;
+}
+
+.chat-msg.ai .chat-bubble {
+    background: var(--glass-shine);
+    border: 1px solid var(--glass-border);
+    border-bottom-left-radius: 4px;
+}
