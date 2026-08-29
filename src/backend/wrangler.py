@@ -318,6 +318,17 @@ class WranglerCLI:
             return {"success": True, "message": f"Redeploy triggered for '{name}'", "output": result.get("raw", "")}
         return {"success": False, "error": result.get("error", "Redeploy failed")}
 
+    def redeploy_worker(self, name: str, local_path: str = "") -> dict:
+        if local_path and Path(local_path).exists():
+            result = self._run(["deploy", "--cwd", str(local_path)], timeout=120)
+            if result["success"]:
+                return {"success": True, "message": f"Worker '{name}' redeployed from {local_path}", "output": result.get("raw", "")}
+            return {"success": False, "error": result.get("error", "Redeploy failed")}
+        result = self._run(["deploy", name], timeout=120)
+        if result["success"]:
+            return {"success": True, "message": f"Worker '{name}' redeployed", "output": result.get("raw", "")}
+        return {"success": False, "error": result.get("error", "Redeploy failed")}
+
     # ── Secret Scanner (GitGuardian-style) ────────────────
 
     SECRET_PATTERNS = [

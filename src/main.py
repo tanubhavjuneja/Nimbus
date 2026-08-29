@@ -240,6 +240,12 @@ class Bridge(QObject):
                 self.cli._project_local_paths[project_name] = p
         return json.dumps({"success": True, "path": p})
 
+    @Slot(result=str)
+    def get_all_local_paths(self) -> str:
+        """Get all saved local directory paths."""
+        paths = self._config.get("local_paths", {})
+        return json.dumps({"success": True, "data": paths})
+
     @Slot(str, result=str)
     def load_settings(self, key: str) -> str:
         """Load a setting from config."""
@@ -493,6 +499,12 @@ class Bridge(QObject):
     @Slot(str, result=str)
     def redeploy_pages(self, name: str) -> str:
         result = self.cli.redeploy_pages(name)
+        return json.dumps(result)
+
+    @Slot(str, result=str)
+    def redeploy_worker(self, name: str) -> str:
+        local_path = self.cli._project_local_paths.get(name, "") or self._config.get("local_paths", {}).get(name, "")
+        result = self.cli.redeploy_worker(name, local_path)
         return json.dumps(result)
 
     @Slot(result=str)

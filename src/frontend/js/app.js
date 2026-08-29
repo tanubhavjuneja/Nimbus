@@ -39,10 +39,33 @@ const S = {
     warnings: [], hist: { shown: [], ignored: [], fixed: [], stats: {} },
     glossary: {}, audience: 'beginner',
     ollama: { available: false, model: 'none', models: [] },
-    alwaysIgnored: [], detailData: null
+    alwaysIgnored: [], detailData: null, localPaths: {}
 };
 
 const $ = id => document.getElementById(id);
+
+// ═══ Button Loading State ═════════════════════
+
+function btnLoading(btn, loading = true) {
+    if (!btn) return;
+    if (loading) {
+        btn.dataset.origHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.style.opacity = '0.6';
+        btn.style.pointerEvents = 'none';
+        btn.innerHTML = '<span class="spin" style="width:14px;height:14px;display:inline-block;vertical-align:middle"></span>';
+    } else {
+        btn.disabled = false;
+        btn.style.opacity = '';
+        btn.style.pointerEvents = '';
+        if (btn.dataset.origHtml) btn.innerHTML = btn.dataset.origHtml;
+    }
+}
+
+async function withBtn(btn, fn) {
+    if (btn) btnLoading(btn, true);
+    try { await fn(); } finally { if (btn) btnLoading(btn, false); }
+}
 
 function toast(msg, type = 'info') {
     const c = $('toasts'); if (!c) return;
@@ -512,6 +535,16 @@ async function deleteR2Obj(bucket, key) {
     else toast(r.error || 'Delete failed', 'error');
 }
 
+async function setProjectPath(type, name) {
+    const r = await API.call('save_local_path', name);
+    if (r?.success && r.path) {
+        S.localPaths[name] = r.path;
+        if (S.detailData && S.detailData.name === name) S.detailData.localPath = r.path;
+        toast(`Local path set for ${name}`, 'success');
+        refresh(true);
+    }
+}
+
 // ═══ Services ════════════════════════════════
 
 function pServices() {
@@ -526,15 +559,17 @@ function pServices() {
         ${S.pages.length === 0 ? '<p style="color:var(--text3);margin-bottom:14px">No Pages projects.</p>' : `
         <div class="tbl"><table>
             <thead><tr><th>Project</th><th>URL</th><th>Modified</th><th></th></tr></thead>
-            <tbody>${S.pages.map(p => `<tr class="svc-card" onclick="showProjectDetail('pages','${p.name || ''}')">
+            <tbody>${S.pages.map(p => {
+                const hasPath = !!S.localPaths[p.name];
+                return `<tr class="svc-card" onclick="showProjectDetail('pages','${p.name || ''}')">
                 <td><strong>${p.name || '-'}</strong></td>
                 <td><a href="https://${p.name}.pages.dev" target="_blank" style="color:var(--blue);text-decoration:none" onclick="event.stopPropagation()">${p.name}.pages.dev</a></td>
                 <td>${p.modified || '-'}</td>
                 <td style="display:flex;gap:6px">
-                    <button class="btn btn-glow btn-sm" onclick="event.stopPropagation();redeployPages('${p.name || ''}')">Redeploy</button>
-                    <button class="btn btn-red btn-sm" onclick="event.stopPropagation();deletePagesProject('${p.name || ''}')">Delete</button>
+                    ${hasPath ? `<button class="btn btn-glow btn-sm" onclick="event.stopPropagation();withBtn(this,()=>redeployPages('${p.name || ''}'))">Redeploy</button>` : ''}
+                    <button class="btn btn-red btn-sm" onclick="event.stopPropagation();withBtn(this,()=>deletePagesProject('${p.name || ''}'))">Delete</button>
                 </td>
-            </tr>`).join('')}</tbody>
+            </tr>`}).join('')}</tbody>
         </table></div>`}
 
         <div class="sec-head" style="margin-top:20px">
@@ -544,12 +579,17 @@ function pServices() {
         ${S.workers.length === 0 ? '<p style="color:var(--text3)">No Workers deployed.</p>' : `
         <div class="tbl"><table>
             <thead><tr><th>Name</th><th>Routes</th><th>Modified</th><th></th></tr></thead>
-            <tbody>${S.workers.map(w => `<tr class="svc-card" onclick="showWorkerDetail('${w.name || ''}')">
+            <tbody>${S.workers.map(w => {
+                const hasPath = !!S.localPaths[w.name];
+                return `<tr class="svc-card" onclick="showWorkerDetail('${w.name || ''}')">
                 <td><strong>${w.name || '-'}</strong></td>
                 <td style="font-size:11px;color:var(--text3)">${w.routes || '-'}</td>
                 <td>${w.modified || '-'}</td>
-                <td><button class="btn btn-red btn-sm" onclick="event.stopPropagation();deleteWorker('${w.name || ''}')">Delete</button></td>
-            </tr>`).join('')}</tbody>
+                <td style="display:flex;gap:6px">
+                    ${hasPath ? `<button class="btn btn-glow btn-sm" onclick="event.stopPropagation();withBtn(this,()=>redeployWorker('${w.name || ''}'))">Redeploy</button>` : ''}
+                    <button class="btn btn-red btn-sm" onclick="event.stopPropagation();withBtn(this,()=>deleteWorker('${w.name || ''}'))">Delete</button>
+                </td>
+            </tr>`}).join('')}</tbody>
         </table></div>`}
 
         <div class="sec-head" style="margin-top:20px">
@@ -563,7 +603,7 @@ function pServices() {
                 <td><strong>${d.name || '-'}</strong></td>
                 <td>${d.num_tables || '0'}</td>
                 <td>${d.file_size ? (parseInt(d.file_size)/(1024*1024)).toFixed(2)+' MB' : '-'}</td>
-                <td><button class="btn btn-red btn-sm" onclick="event.stopPropagation();deleteD1('${d.name || ''}')">Delete</button></td>
+                <td><button class="btn btn-red btn-sm" onclick="event.stopPropagation();withBtn(this,()=>deleteD1('${d.name || ''}'))">Delete</button></td>
             </tr>`).join('')}</tbody>
         </table></div>`}
 
@@ -591,7 +631,7 @@ function pServices() {
                 <td>${r.created_on ? new Date(r.created_on).toLocaleDateString() : '-'}</td>
                 <td style="display:flex;gap:6px">
                     <button class="btn btn-blue btn-sm" onclick="event.stopPropagation();showUploadR2('${r.name || ''}')">Upload</button>
-                    <button class="btn btn-red btn-sm" onclick="event.stopPropagation();deleteR2('${r.name || ''}')">Delete</button>
+                    <button class="btn btn-red btn-sm" onclick="event.stopPropagation();withBtn(this,()=>deleteR2('${r.name || ''}'))">Delete</button>
                 </td>
             </tr>`).join('')}</tbody>
         </table></div>`}
@@ -606,7 +646,7 @@ function pServices() {
 
         <div class="sec-head" style="margin-top:24px">
             <span class="sec-title">Security Audit</span>
-            <button class="btn btn-red btn-sm" onclick="showFullAudit()">
+            <button class="btn btn-red btn-sm" id="btnFullAudit" onclick="withBtn(this,showFullAudit)">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
                 Full Audit
             </button>
@@ -653,7 +693,7 @@ function showCreateD1() {
         </div>
         <div class="modal-acts">
             <button class="btn btn-ghost" onclick="hideModal()">Cancel</button>
-            <button class="btn btn-glow" onclick="createD1()">Create Database</button>
+            <button class="btn btn-glow" id="btnCreateD1" onclick="withBtn(this,createD1)">Create Database</button>
         </div>`;
     $('modalBg').style.display = 'flex';
 }
@@ -661,7 +701,6 @@ function showCreateD1() {
 async function createD1() {
     const name = $('d1Name')?.value?.trim();
     if (!name) { toast('Enter a database name', 'error'); return; }
-    toast('Creating database...', 'info');
     const r = await API.call('create_d1_database', name);
     if (r.success) { toast(r.message || 'Database created!', 'success'); hideModal(); refresh(true); }
     else toast(r.error || 'Failed', 'error');
@@ -670,7 +709,7 @@ async function createD1() {
 async function deleteD1(name) {
     if (!confirm(`Delete database "${name}"? This cannot be undone.`)) return;
     const r = await API.call('delete_d1_database', name);
-    if (r.success) { toast(r.message, 'success'); refresh(); }
+    if (r.success) { toast(r.message, 'success'); refresh(true); }
     else toast(r.error || 'Failed', 'error');
 }
 
@@ -684,7 +723,7 @@ function showCreateR2() {
         </div>
         <div class="modal-acts">
             <button class="btn btn-ghost" onclick="hideModal()">Cancel</button>
-            <button class="btn btn-glow" onclick="createR2()">Create Bucket</button>
+            <button class="btn btn-glow" id="btnCreateR2" onclick="withBtn(this,createR2)">Create Bucket</button>
         </div>`;
     $('modalBg').style.display = 'flex';
 }
@@ -692,7 +731,6 @@ function showCreateR2() {
 async function createR2() {
     const name = $('r2Name')?.value?.trim();
     if (!name) { toast('Enter a bucket name', 'error'); return; }
-    toast('Creating bucket...', 'info');
     const r = await API.call('create_r2_bucket', name);
     if (r.success) { toast(r.message || 'Bucket created!', 'success'); hideModal(); refresh(true); }
     else toast(r.error || 'Failed', 'error');
@@ -809,7 +847,7 @@ function showCreatePages() {
         </div>
         <div class="modal-acts">
             <button class="btn btn-ghost" onclick="hideModal()">Cancel</button>
-            <button class="btn btn-glow" id="pagesDeployBtn" onclick="doCreatePages()" disabled>Deploy</button>
+            <button class="btn btn-glow" id="pagesDeployBtn" onclick="withBtn(this,doCreatePages)" disabled>Deploy</button>
         </div>`;
     $('modalBg').style.display = 'flex';
 }
@@ -860,7 +898,7 @@ function showDeployLocal() {
         </div>
         <div class="modal-acts">
             <button class="btn btn-ghost" onclick="hideModal()">Cancel</button>
-            <button class="btn btn-glow" onclick="doDeployLocal()">Deploy</button>
+            <button class="btn btn-glow" onclick="withBtn(this,doDeployLocal)">Deploy</button>
         </div>`;
     $('modalBg').style.display = 'flex';
 }
@@ -883,10 +921,28 @@ async function doDeployLocal() {
 }
 
 async function redeployPages(name) {
+    const path = S.localPaths[name];
+    if (path) {
+        toast(`Deploying from ${path.split(/[\\/]/).pop()}...`, 'info');
+        const r = await API.call('smart_deploy', path, name, 'pages');
+        if (r.success) toast(r.message || r.output || 'Deployed!', 'success');
+        else toast(r.error || 'Deploy failed', 'error');
+    } else {
+        toast('Redeploying...', 'info');
+        const r = await API.call('redeploy_pages', name);
+        if (r.success) toast(r.message || 'Redeploy triggered!', 'success');
+        else toast(r.error || 'Redeploy failed', 'error');
+    }
+    refresh(true);
+}
+
+async function redeployWorker(name) {
+    const path = S.localPaths[name];
     toast(`Redeploying ${name}...`, 'info');
-    const r = await API.call('redeploy_pages', name);
-    if (r.success) toast(r.message || 'Redeploy triggered!', 'success');
+    const r = await API.call('redeploy_worker', name);
+    if (r.success) toast(r.message || r.output || 'Redeployed!', 'success');
     else toast(r.error || 'Redeploy failed', 'error');
+    refresh(true);
 }
 
 async function deletePagesProject(name) {
@@ -921,7 +977,7 @@ function showCreateWorker() {
         </div>
         <div class="modal-acts">
             <button class="btn btn-ghost" onclick="hideModal()">Cancel</button>
-            <button class="btn btn-glow" id="workerDeployBtn" onclick="doCreateWorker()" disabled>Deploy</button>
+            <button class="btn btn-glow" id="workerDeployBtn" onclick="withBtn(this,doCreateWorker)" disabled>Deploy</button>
         </div>`;
     $('modalBg').style.display = 'flex';
 }
@@ -1612,6 +1668,10 @@ async function init() {
         // Load audience setting from config
         const audR = await API.call('load_settings', 'audience');
         if (audR?.success && audR.value) S.audience = audR.value;
+
+        // Load all local paths
+        const pathsR = await API.call('get_all_local_paths');
+        if (pathsR?.success && pathsR.data) S.localPaths = pathsR.data;
 
         // Refresh in background (silent)
         refresh(true);
