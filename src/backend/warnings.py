@@ -310,6 +310,11 @@ class OllamaClient:
             self._available = False
         return self._available
 
+    def recheck(self):
+        """Force re-check of availability."""
+        self._available = None
+        return self.is_available()
+
     def get_model(self) -> str:
         if not self._model:
             self.is_available()
@@ -337,10 +342,11 @@ class OllamaClient:
                 method="POST",
                 headers={"Content-Type": "application/json"}
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 data = json.loads(resp.read())
                 return data.get("message", {}).get("content", "")
-        except Exception:
+        except Exception as e:
+            self._available = None
             return ""
 
     def analyze_finding(self, finding: dict, file_content: str = "") -> dict:

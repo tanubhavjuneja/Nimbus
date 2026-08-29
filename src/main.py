@@ -374,7 +374,7 @@ class Bridge(QObject):
     @Slot(str, result=str)
     def ollama_set_model(self, model: str) -> str:
         self.ollama._model = model
-        self.ollama._available = True
+        self.ollama._available = None  # Reset cache so is_available() re-checks
         self._config.setdefault("settings", {})["ollama_model"] = model
         self._save_config()
         return json.dumps({"success": True})

@@ -414,22 +414,28 @@ function runProjectScan(dir) {
         if (!r.success) { el.innerHTML = `<div class="warn med"><div class="warn-title">Scan failed: ${r.error}</div></div>`; return; }
         const findings = r.findings || r.data?.findings || [];
         renderScanResults(findings, 'Full Security Audit', dir);
-        // Move scan results into detail panel
         const scanEl = $('auditResults');
         if (scanEl) { el.innerHTML = scanEl.innerHTML; scanEl.innerHTML = ''; }
+        // Refresh scan history and warnings after scan
+        const scanR = await API.call('get_scan_history');
+        if (scanR?.success && scanR.data) S.scanHistory = scanR.data;
+        if (findings.length > 0) {
+            const warnR = await API.call('get_warning_history');
+            if (warnR?.success && warnR.data) S.hist = warnR.data;
+        }
     })();
 }
 
 function renderDetail() {
     if (!S.detailData) return '';
     const d = S.detailData;
-    if (d.loading) return `<div class="detail-panel"><div class="loading-text">Loading ${d.name}...</div><div class="loading-spinner" style="width:24px;height:24px;margin:12px auto"></div></div>`;
-    if (d.error) return `<div class="detail-panel"><div class="detail-header"><div class="detail-title">${d.name}</div><button class="detail-close" onclick="closeDetail()">&times;</button></div><p style="color:var(--red)">${d.error}</p></div>`;
+    if (d.loading) return `<div class="detail-panel"><div class="detail-header"><button class="detail-back" onclick="closeDetail()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7l-7 7 7 7"/></svg> Back to Projects</button></div><div style="text-align:center;padding:80px 20px"><span class="spin" style="width:24px;height:24px"></span><div style="font-size:13px;color:var(--text3);margin-top:12px">Loading ${d.name}...</div></div></div>`;
+    if (d.error) return `<div class="detail-panel"><div class="detail-header"><button class="detail-back" onclick="closeDetail()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7l-7 7 7 7"/></svg> Back to Projects</button><div class="detail-title">${d.name}</div><button class="detail-close" onclick="closeDetail()">&times;</button></div><p style="color:var(--red)">${d.error}</p></div>`;
 
     const info = d.data || {};
     const localPath = d.localPath || '';
     const isProject = d.type === 'pages' || d.type === 'worker';
-    let html = `<div class="detail-panel"><div class="detail-header"><div class="detail-title">${d.name}</div><button class="detail-close" onclick="closeDetail()">&times;</button></div>`;
+    let html = `<div class="detail-panel"><div class="detail-header"><button class="detail-back" onclick="closeDetail()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7l-7 7 7 7"/></svg> Back to Projects</button><div class="detail-title">${d.name}</div><button class="detail-close" onclick="closeDetail()">&times;</button></div>`;
 
     if (isProject) {
         html += `
@@ -464,12 +470,13 @@ function renderDetail() {
         const deps = info.deployments || [];
         if (deps.length > 0) {
             html += `<div class="detail-section"><div class="detail-section-title">Recent Deployments</div>
-            <div class="tbl"><table><thead><tr><th>URL</th><th>Created</th><th>Branch</th></tr></thead><tbody>`;
-            deps.slice(0, 5).forEach(dep => {
-                const url = dep.url || dep.deploy_url || '-';
-                const created = dep.created_on || dep.created || '-';
-                const branch = dep.deployment_trigger?.metadata?.branch || dep.branch || '-';
-                html += `<tr><td><a href="${url}" target="_blank" style="color:var(--blue);text-decoration:none;font-size:11px">${url.length > 40 ? url.substring(0, 40) + '...' : url}</a></td><td style="font-size:11px">${created}</td><td><span class="detail-tag blue">${branch}</span></td></tr>`;
+            <div class="tbl"><table><thead><tr><th>URL</th><th>Environment</th><th>Branch</th><th>Status</th></tr></thead><tbody>`;
+            deps.slice(0, 10).forEach(dep => {
+                const url = dep.url || '-';
+                const env = dep.environment || '-';
+                const branch = dep.branch || '-';
+                const status = dep.created_on || '-';
+                html += `<tr><td><a href="${url}" target="_blank" style="color:var(--blue);text-decoration:none;font-size:11px">${url.length > 45 ? url.substring(0, 45) + '...' : url}</a></td><td><span class="detail-tag blue">${env}</span></td><td><span class="detail-tag green">${branch}</span></td><td style="font-size:11px;color:var(--text3)">${status}</td></tr>`;
             });
             html += `</tbody></table></div></div>`;
         }
@@ -1273,6 +1280,14 @@ async function runSpecificScan(type) {
 
     const findings = type === 'fullaudit' ? (r.findings || r.data?.findings || []) : (r.data || r.findings || []);
     renderScanResults(findings, label, dir);
+
+    // Refresh scan history and warnings after scan completes
+    const scanR = await API.call('get_scan_history');
+    if (scanR?.success && scanR.data) S.scanHistory = scanR.data;
+    if (findings.length > 0) {
+        const warnR = await API.call('get_warning_history');
+        if (warnR?.success && warnR.data) S.hist = warnR.data;
+    }
 }
 
 // ═══ History ═════════════════════════════════

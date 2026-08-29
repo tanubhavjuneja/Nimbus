@@ -760,16 +760,24 @@ class WranglerCLI:
 
     def get_pages_project_details(self, name: str) -> dict:
         deployments = []
-        result = self._run(["pages", "deployment", "list", "--project-name", name])
+        result = self._run(["pages", "deployment", "list", "--project-name", name, "--json"])
         if result["success"]:
             raw = result.get("raw", "")
             try:
                 data = json.loads(raw)
                 if isinstance(data, list):
-                    deployments = data
+                    for d in data:
+                        deployments.append({
+                            "id": d.get("Id", ""),
+                            "url": d.get("Deployment", ""),
+                            "environment": d.get("Environment", ""),
+                            "branch": d.get("Branch", ""),
+                            "source": d.get("Source", ""),
+                            "created_on": d.get("Status", ""),
+                            "build_url": d.get("Build", ""),
+                        })
             except json.JSONDecodeError:
-                rows = self._parse_table(raw)
-                deployments = rows
+                pass
         return {"name": name, "url": f"https://{name}.pages.dev", "deployments": deployments}
 
     def get_worker_details(self, name: str) -> dict:
@@ -1242,22 +1250,24 @@ class WranglerCLI:
         """Replace CORS wildcard with a safe default."""
         file_path = finding.get("file", "")
         p = Path(file_path)
+        if not p.exists():
+            return {"success": False, "error": f"File not found: {file_path}"}
         try:
             content = p.read_text(encoding="utf-8")
-            # Replace Access-Control-Allow-Origin: * with specific origin
+            original = content
             content = re.sub(
                 r"""(Access-Control-Allow-Origin["\']?\s*[:=]\s*["'])\*["']?""",
                 r"\1https://yourdomain.com",
                 content
             )
-            # Also handle header.set style
             content = re.sub(
                 r"""(["']Access-Control-Allow-Origin["']\s*,\s*["'])\*["']""",
                 r"\1https://yourdomain.com",
                 content
             )
-            # Remove null origin
             content = re.sub(r"""["']null["']""", '"https://yourdomain.com"', content)
+            if content == original:
+                return {"success": True, "message": "CORS pattern already fixed"}
             p.write_text(content, encoding="utf-8")
             return {"success": True, "message": f"Replaced CORS wildcard in {p.name}",
                     "note": "Update 'https://yourdomain.com' to your actual domain."}
@@ -1275,23 +1285,67 @@ class WranglerCLI:
             return {"success": True, "message": f"Secret found in {p.name}",
                     "note": "Move sensitive values to Cloudflare secrets: wrangler secret put <NAME>"}
 
-        # For hardcoded values in source code, replace with env reference
+        if not p.exists():
+            return {"success": False, "error": f"File not found: {file_path}"}
+
+        # For source code files, replace hardcoded values with env references
         try:
             content = p.read_text(encoding="utf-8")
-            if p.suffix in ('.js', '.ts', '.mjs'):
-                # Replace hardcoded values with env.X references
-                for pat in [r"""(["'])(?:sk_live_|sk_test_|sk-proj-|ghp_|gho_|glpat-|xoxb-|xoxp-|AKIA|AIza)[A-Za-z0-9_\-.""']+\1""",
-                           r"""((?:api[_-]?key|apikey|secret|password|token|auth_token)\s*[:=]\s*["'])[^"']+(["'])"""]:
+            original = content
+            env_name = None
+
+            if p.suffix in ('.js', '.ts', '.mjs', '.jsx', '.tsx'):
+                # JS/TS: replace known prefix patterns
+                for pat, repl in [
+                    (r"""(["'])(?:sk_live_|sk_test_)[A-Za-z0-9]{24,}\1""", None),
+                    (r"""(["'])(?:ghp_|gho_|glpat-)[A-Za-z0-9\-_]{20,}\1""", None),
+                    (r"""(["'])(?:xox[bpsar]-[A-Za-z0-9\-]{10,})\1""", None),
+                    (r"""(["'])(?:AKIA[A-Z0-9]{16})\1""", None),
+                    (r"""(["'])(?:AIza[A-Za-z0-9_\-]{35})\1""", None),
+                    (r"""(["'])(?:sk-[A-Za-z0-9]{48,})\1""", None),
+                    (r"""((?:const|let|var)\s+\w*(?:api[_-]?key|apikey|secret|password|token)\w*\s*=\s*["'])[^"']+(["'])""", None),
+                    (r"""((?:api[_-]?key|apikey|secret|password|token|auth_token)\s*[:=]\s*["'])[^"']+(["'])""", None),
+                ]:
+                    match = re.search(pat, content, re.IGNORECASE)
+                    if match:
+                        env_name = re.sub(r'[^A-Z0-9]', '_', match.group(0)[:20].upper()).strip('_')
+                        content = re.sub(pat, match.group(1) + f"env.{env_name}" + match.group(2), content, count=1, flags=re.IGNORECASE)
+                        break
+
+            elif p.suffix == '.py':
+                # Python: replace known prefix patterns and variable assignments
+                for pat in [
+                    r"""(["'])(?:sk_live_|sk_test_)[A-Za-z0-9]{24,}\1""",
+                    r"""(["'])(?:ghp_|gho_|glpat-)[A-Za-z0-9\-_]{20,}\1""",
+                    r"""(["'])(?:AKIA[A-Z0-9]{16})\1""",
+                    r"""(["'])(?:AIza[A-Za-z0-9_\-]{35})\1""",
+                    r"""(["'])(?:sk-[A-Za-z0-9]{48,})\1""",
+                    r"""((?:api[_-]?key|apikey|secret|password|token|auth_token)\s*=\s*["'])[^"']+(["'])""",
+                    r"""((?:SECRET_KEY|DATABASE_URL|AWS_SECRET_ACCESS_KEY)\s*=\s*["'])[^"']+(["'])""",
+                ]:
                     match = re.search(pat, content, re.IGNORECASE)
                     if match:
                         env_name = re.sub(r'[^A-Z0-9]', '_', match.group(0)[:20].upper()).strip('_')
                         content = content[:match.start()] + match.group(1) + f"env.{env_name}" + match.group(2) + content[match.end():]
                         break
+
+            elif p.suffix in ('.json', '.yaml', '.yml', '.toml', '.env', '.cfg', '.conf', '.ini'):
+                # Config files: replace values for secret-looking keys
+                for pat in [
+                    r"""(["'](?:api[_-]?key|apikey|secret|password|token|auth_token|access_token|private_key)["']?\s*[:=]\s*["'])[^"']+(["'])""",
+                ]:
+                    match = re.search(pat, content, re.IGNORECASE)
+                    if match:
+                        env_name = re.sub(r'[^A-Z0-9]', '_', match.group(0)[:20].upper()).strip('_')
+                        content = content[:match.start()] + match.group(1) + f"env.{env_name}" + match.group(2) + content[match.end():]
+                        break
+
+            if content != original and env_name:
                 p.write_text(content, encoding="utf-8")
                 return {"success": True, "message": f"Replaced hardcoded secret in {p.name} with env reference",
                         "note": f"Set the value with: wrangler secret put {env_name}"}
-        except Exception:
-            pass
+        except Exception as e:
+            return {"success": False, "error": f"Failed to fix: {e}"}
 
         return {"success": True, "message": "Secret detected — review manually",
                 "note": "Use wrangler secret put <NAME> to store securely, then reference as env.NAME"}
@@ -1387,18 +1441,31 @@ class WranglerCLI:
             return {"success": False, "error": f"Source file not found: {file_path}"}
         content = file_path.read_text(encoding="utf-8")
         original = content
-        patterns = [
-            (r'((?:const|let|var)\s+\w*(?:api[_-]?key|apikey|secret|password|token)\w*\s*=\s*["\'])[^"\']+(["\'])',
-             r'\1REPLACE_ME\2'),
-            (r'((?:api[_-]?key|apikey|secret|password|token)\s*[:=]\s*["\'])[^"\']+(["\'])',
-             r'\1REPLACE_ME\2'),
-        ]
-        for pat, repl in patterns:
-            content = re.sub(pat, repl, content, flags=re.IGNORECASE)
+        matched_env = None
+
+        for pat, env in [
+            (r"""(["'])(?:sk_live_|sk_test_)[A-Za-z0-9]{24,}\1""", "STRIPE_KEY"),
+            (r"""(["'])(?:ghp_|gho_|glpat-)[A-Za-z0-9\-_]{20,}\1""", "GIT_TOKEN"),
+            (r"""(["'])(?:xox[bpsar]-[A-Za-z0-9\-]{10,})\1""", "SLACK_TOKEN"),
+            (r"""(["'])(?:AKIA[A-Z0-9]{16})\1""", "AWS_ACCESS_KEY"),
+            (r"""(["'])(?:AIza[A-Za-z0-9_\-]{35})\1""", "GOOGLE_API_KEY"),
+            (r"""(["'])(?:sk-[A-Za-z0-9]{48,})\1""", "OPENAI_KEY"),
+            (r"""(["'])(?:CLOUDFLARE_API_TOKEN|CF_API_TOKEN)\s*[:=]\s*["\']([^"']+)["\']""", "CF_API_TOKEN"),
+            (r"""(["'])(?:CLOUDFLARE_API_KEY|CF_API_KEY)\s*[:=]\s*["\']([^"']+)["\']""", "CF_API_KEY"),
+            (r'((?:const|let|var|Python)\s+\w*(?:api[_-]?key|apikey|secret|password|token)\w*\s*=\s*["\'])[^"\']+(["\'])', None),
+            (r'((?:api[_-]?key|apikey|secret|password|token|auth_token|access_token)\s*[:=]\s*["\'])[^"\']+(["\'])', None),
+            (r'((?:SECRET_KEY|DATABASE_URL|AWS_SECRET_ACCESS_KEY|SMTP_PASSWORD)\s*[:=]\s*["\'])[^"\']+(["\'])', None),
+        ]:
+            match = re.search(pat, content, re.IGNORECASE)
+            if match:
+                content = re.sub(pat, match.group(1) + "REPLACE_ME" + match.group(2), content, count=1, flags=re.IGNORECASE)
+                matched_env = env or re.sub(r'[^A-Z0-9]', '_', match.group(0)[:20].upper()).strip('_')
+                break
+
         if content != original:
             file_path.write_text(content, encoding="utf-8")
             return {"success": True, "message": f"Replaced secrets in {file_path.name} with REPLACE_ME",
-                    "note": "Use env.API_KEY and set via wrangler secret put."}
+                    "note": f"Use env.{matched_env} and set via wrangler secret put."}
         return {"success": False, "error": "No patterns matched for replacement"}
 
 
