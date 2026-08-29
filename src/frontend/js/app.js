@@ -1102,17 +1102,27 @@ function renderScanResults(findings, label, scannedDir) {
         return;
     }
 
-    const crit = findings.filter(f => f.severity === 'Critical');
-    const high = findings.filter(f => f.severity === 'High');
-    const med = findings.filter(f => f.severity === 'Medium');
-    const low = findings.filter(f => f.severity === 'Low');
+    const sevOrder = { 'Critical': 0, 'High': 1, 'Medium': 2, 'Low': 3 };
+    const sorted = [...findings].sort((a, b) => (sevOrder[a.severity] ?? 4) - (sevOrder[b.severity] ?? 4));
+
+    const AUTO_FIXABLE = new Set([
+        'VarsSecrets','DevVarsGitignore','AccountIdExposed','HardcodedSecret',
+        'VulnDependency','EnvExposure','EnvFilePresent','MissingHeader',
+        'CORSWildcard','CORSEvilOrigin','CORSCredentialsWildcard','SecretScan'
+    ]);
+
+    const crit = sorted.filter(f => f.severity === 'Critical');
+    const high = sorted.filter(f => f.severity === 'High');
+    const med = sorted.filter(f => f.severity === 'Medium');
+    const low = sorted.filter(f => f.severity === 'Low');
+    const autoFixableCount = sorted.filter(f => AUTO_FIXABLE.has(f.check)).length;
 
     el.innerHTML = `
         <div class="card" style="margin-top:12px;border-color:rgba(252,165,165,0.2)">
             <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
                 <div style="font-size:24px;color:var(--red)">&#9888;</div>
                 <div style="flex:1">
-                    <div style="font-size:14px;font-weight:600">${findings.length} issue${findings.length !== 1 ? 's' : ''} found</div>
+                    <div style="font-size:14px;font-weight:600">${sorted.length} issue${sorted.length !== 1 ? 's' : ''} found</div>
                     <div style="font-size:12px;color:var(--text3)">
                         ${crit.length > 0 ? `<span style="color:var(--red)">${crit.length} critical</span> ` : ''}
                         ${high.length > 0 ? `<span style="color:var(--orange)">${high.length} high</span> ` : ''}
@@ -1120,17 +1130,18 @@ function renderScanResults(findings, label, scannedDir) {
                         ${low.length > 0 ? `<span style="color:var(--text3)">${low.length} low</span>` : ''}
                     </div>
                 </div>
+                ${autoFixableCount > 0 ? `
                 <button class="btn btn-glow btn-sm" onclick="fixAllFindings('${scannedDir.replace(/\\/g, '\\\\')}')">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                    Fix All Auto
-                </button>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                    Fix All Auto (${autoFixableCount})
+                </button>` : ''}
             </div>
             <div id="fixAllStatus"></div>
-            ${findings.map((f, i) => {
+            ${sorted.map((f, i) => {
                 const cls = f.severity === 'Critical' ? 'crit' : f.severity === 'High' ? 'high' : 'med';
-                const hasFix = ['VarsSecrets','DevVarsGitignore','AccountIdExposed','HardcodedSecret',
-                    'VulnDependency','EnvExposure','EnvFilePresent','MissingHeader',
-                    'CORSWildcard','CORSEvilOrigin','CORSCredentialsWildcard','SecretScan'].includes(f.check);
+                const canAutoFix = AUTO_FIXABLE.has(f.check);
+                const needsAI = !canAutoFix;
+                const ollamaOk = S.ollama.available;
                 return `
                 <div class="warn ${cls}" style="margin-bottom:8px" id="finding-${i}">
                     <div class="warn-head">
@@ -1145,15 +1156,20 @@ function renderScanResults(findings, label, scannedDir) {
                         <div class="warn-explain">${f.simple_explanation || ''}</div>
                         ${f.matched ? `<div style="margin-top:6px;font-family:monospace;font-size:11px;padding:6px 10px;background:rgba(0,0,0,0.2);border-radius:4px;color:var(--red);word-break:break-all">${f.matched}</div>` : ''}
                         ${f.fix ? `<div style="margin-top:8px;font-size:12px;color:var(--green)"><strong>Fix:</strong> ${f.fix}</div>` : ''}
-                        <div style="display:flex;gap:6px;margin-top:10px">
-                            ${hasFix ? `<button class="btn btn-glow btn-sm" onclick="autoFixFinding(${i}, '${scannedDir.replace(/\\/g, '\\\\')}')">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-                                Auto Fix
-                            </button>` : ''}
-                            <button class="btn btn-ghost btn-sm" onclick="aiFixFinding(${i}, '${scannedDir.replace(/\\/g, '\\\\')}')">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 14v-4m0-4h.01"/></svg>
-                                AI Fix
-                            </button>
+                        <div style="display:flex;gap:6px;margin-top:10px;align-items:center">
+                            ${canAutoFix ? `
+                                <button class="btn btn-glow btn-sm" onclick="autoFixFinding(${i}, '${scannedDir.replace(/\\/g, '\\\\')}')">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                                    Fix This
+                                </button>
+                            ` : needsAI && ollamaOk ? `
+                                <button class="btn btn-cyan btn-sm" onclick="aiFixFinding(${i}, '${scannedDir.replace(/\\/g, '\\\\')}')">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 6v6m11-7h-6m-6 0H1"/></svg>
+                                    AI Fix
+                                </button>
+                            ` : needsAI && !ollamaOk ? `
+                                <span style="font-size:11px;color:var(--text3);font-style:italic">Connect Ollama for AI fix</span>
+                            ` : ''}
                         </div>
                         <div id="fixStatus-${i}" style="margin-top:8px"></div>
                     </div>
@@ -1161,7 +1177,7 @@ function renderScanResults(findings, label, scannedDir) {
             }).join('')}
         </div>`;
 
-    window._lastFindings = findings;
+    window._lastFindings = sorted;
 }
 
 async function autoFixFinding(index, projectDir) {
