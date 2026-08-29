@@ -1058,7 +1058,241 @@ class WranglerCLI:
             return self._fix_account_id(project_path)
         elif check == "HardcodedSecret":
             return self._fix_hardcoded_secret(finding, project_path)
+        elif check == "VulnDependency":
+            return self._fix_vulnerable_dep(finding, project_path)
+        elif check == "EnvExposure":
+            return self._fix_env_exposure(finding, project_path)
+        elif check == "EnvFilePresent":
+            return self._fix_env_to_secrets(finding, project_path)
+        elif check == "MissingHeader":
+            return self._fix_missing_header(finding, project_path)
+        elif check == "CORSWildcard":
+            return self._fix_cors_wildcard(finding, project_path)
+        elif check == "CORSEvilOrigin":
+            return self._fix_cors_wildcard(finding, project_path)
+        elif check == "CORSCredentialsWildcard":
+            return self._fix_cors_wildcard(finding, project_path)
+        elif check == "SecretScan":
+            return self._fix_secret_scan(finding, project_path)
         return {"success": False, "error": f"No auto-fix available for: {check}"}
+
+    def _fix_vulnerable_dep(self, finding: dict, project_path: str) -> dict:
+        """Update vulnerable dependency to fixed version."""
+        msg = finding.get("message", "")
+        file_path = finding.get("file", "")
+        match = re.search(r'Vulnerable\s+(\S+)\s+\S+:\s+\S+', msg)
+        if not match:
+            return {"success": False, "error": "Could not parse dependency info"}
+        dep_name = match.group(1)
+        fix_text = finding.get("fix", "")
+        version_match = re.search(r'upgrade to >=?\s*(\S+)', fix_text, re.IGNORECASE)
+        if not version_match:
+            return {"success": False, "error": "Could not determine target version"}
+        target_version = version_match.group(1)
+
+        p = Path(file_path)
+        if p.name == "package.json":
+            try:
+                pkg = json.loads(p.read_text(encoding="utf-8"))
+                for key in ["dependencies", "devDependencies"]:
+                    if dep_name in pkg.get(key, {}):
+                        pkg[key][dep_name] = f"^{target_version}"
+                p.write_text(json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+                return {"success": True, "message": f"Updated {dep_name} to >= {target_version} in package.json",
+                        "note": "Run npm install to apply changes."}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        elif p.name == "requirements.txt":
+            try:
+                content = p.read_text(encoding="utf-8")
+                new_lines = []
+                for line in content.splitlines():
+                    if line.strip().lower().startswith(dep_name.lower()):
+                        new_lines.append(f"{dep_name}>={target_version}")
+                    else:
+                        new_lines.append(line)
+                p.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+                return {"success": True, "message": f"Updated {dep_name} to >= {target_version} in requirements.txt"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        return {"success": False, "error": "Unsupported package file"}
+
+    def _fix_env_exposure(self, finding: dict, project_path: str) -> dict:
+        """Add .env files to .gitignore."""
+        msg = finding.get("message", "")
+        match = re.search(r'(\S+)\s+exists but is NOT', msg)
+        env_name = match.group(1) if match else ".env"
+        gitignore_path = Path(project_path) / ".gitignore"
+        try:
+            existing = ""
+            if gitignore_path.exists():
+                existing = gitignore_path.read_text(encoding="utf-8")
+            if env_name in existing:
+                return {"success": True, "message": f"{env_name} already in .gitignore"}
+            existing = existing.rstrip() + f"\n{env_name}\n"
+            gitignore_path.write_text(existing, encoding="utf-8")
+            return {"success": True, "message": f"Added {env_name} to .gitignore"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _fix_env_to_secrets(self, finding: dict, project_path: str) -> dict:
+        """Suggest moving env vars to wrangler secrets."""
+        msg = finding.get("message", "")
+        return {"success": True, "message": "Review each variable and move sensitive ones to wrangler secret put",
+                "note": "For each secret: wrangler secret put <NAME> (then remove from .env)"}
+
+    def _fix_missing_header(self, finding: dict, project_path: str) -> dict:
+        """Inject missing security headers into worker source code."""
+        msg = finding.get("message", "")
+        file_path = finding.get("file", "")
+        header_match = re.search(r'Missing\s+(.+?)\s+header', msg)
+        if not header_match:
+            return {"success": False, "error": "Could not parse header name"}
+        header_name = header_match.group(1)
+
+        header_defaults = {
+            "Content Security Policy (CSP)": "default-src 'self'",
+            "X-Frame-Options": "DENY",
+            "X-Content-Type-Options": "nosniff",
+            "HSTS": "max-age=31536000; includeSubDomains",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
+            "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+            "X-XSS-Protection": "1; mode=block"
+        }
+        header_value = header_defaults.get(header_name, "true")
+        header_http = header_name.replace("Content Security Policy (CSP)", "Content-Security-Policy")
+
+        p = Path(file_path)
+        try:
+            content = p.read_text(encoding="utf-8")
+            if p.suffix in ('.js', '.ts', '.mjs'):
+                # For JS/TS workers - find the Response constructor and add headers
+                if header_http in content:
+                    return {"success": True, "message": f"{header_name} header already present"}
+
+                insert_pattern = r'(new\s+Response\([^)]*,\s*\{[^}]*headers\s*:\s*\{)'
+                if re.search(insert_pattern, content):
+                    content = re.sub(insert_pattern, rf'\1\n          "{header_http}": "{header_value}",', content, count=1)
+                else:
+                    # Try to find a headers object
+                    alt_pattern = r'(headers\s*:\s*\{)'
+                    if re.search(alt_pattern, content):
+                        content = re.sub(alt_pattern, rf'\1\n            "{header_http}": "{value}",', content, count=1)
+                    else:
+                        return {"success": False, "error": "Could not find headers in response. Add manually."}
+            elif p.suffix == '.py':
+                # For Python workers
+                if header_http.lower() in content.lower():
+                    return {"success": True, "message": f"{header_name} header already present"}
+                # Find response creation and add header
+                insert_point = content.rfind("return Response(")
+                if insert_point == -1:
+                    insert_point = content.rfind("return Response(")
+                if insert_point >= 0:
+                    lines = content.splitlines()
+                    for i, line in enumerate(lines):
+                        if "return Response(" in line:
+                            indent = len(line) - len(line.lstrip())
+                            header_line = " " * (indent + 4) + f'headers["{header_http}"] = "{header_value}"'
+                            lines.insert(i, header_line)
+                            content = "\n".join(lines)
+                            break
+                else:
+                    return {"success": False, "error": "Could not find Response in code. Add manually."}
+
+            p.write_text(content, encoding="utf-8")
+            return {"success": True, "message": f"Added {header_name} header to {p.name}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _fix_cors_wildcard(self, finding: dict, project_path: str) -> dict:
+        """Replace CORS wildcard with a safe default."""
+        file_path = finding.get("file", "")
+        p = Path(file_path)
+        try:
+            content = p.read_text(encoding="utf-8")
+            # Replace Access-Control-Allow-Origin: * with specific origin
+            content = re.sub(
+                r"""(Access-Control-Allow-Origin["\']?\s*[:=]\s*["'])\*["']?""",
+                r"\1https://yourdomain.com",
+                content
+            )
+            # Also handle header.set style
+            content = re.sub(
+                r"""(["']Access-Control-Allow-Origin["']\s*,\s*["'])\*["']""",
+                r"\1https://yourdomain.com",
+                content
+            )
+            # Remove null origin
+            content = re.sub(r"""["']null["']""", '"https://yourdomain.com"', content)
+            p.write_text(content, encoding="utf-8")
+            return {"success": True, "message": f"Replaced CORS wildcard in {p.name}",
+                    "note": "Update 'https://yourdomain.com' to your actual domain."}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _fix_secret_scan(self, finding: dict, project_path: str) -> dict:
+        """For detected secrets: add file to .gitignore or suggest wrangler secret put."""
+        file_path = finding.get("file", "")
+        matched = finding.get("matched", "")
+        p = Path(file_path)
+
+        # If it's a .env or config file, suggest moving to secrets
+        if p.name.startswith(".env") or p.name == "wrangler.toml":
+            return {"success": True, "message": f"Secret found in {p.name}",
+                    "note": "Move sensitive values to Cloudflare secrets: wrangler secret put <NAME>"}
+
+        # For hardcoded values in source code, replace with env reference
+        try:
+            content = p.read_text(encoding="utf-8")
+            if p.suffix in ('.js', '.ts', '.mjs'):
+                # Replace hardcoded values with env.X references
+                for pat in [r"""(["'])(?:sk_live_|sk_test_|sk-proj-|ghp_|gho_|glpat-|xoxb-|xoxp-|AKIA|AIza)[A-Za-z0-9_\-.""']+\1""",
+                           r"""((?:api[_-]?key|apikey|secret|password|token|auth_token)\s*[:=]\s*["'])[^"']+(["'])"""]:
+                    match = re.search(pat, content, re.IGNORECASE)
+                    if match:
+                        env_name = re.sub(r'[^A-Z0-9]', '_', match.group(0)[:20].upper()).strip('_')
+                        content = content[:match.start()] + match.group(1) + f"env.{env_name}" + match.group(2) + content[match.end():]
+                        break
+                p.write_text(content, encoding="utf-8")
+                return {"success": True, "message": f"Replaced hardcoded secret in {p.name} with env reference",
+                        "note": f"Set the value with: wrangler secret put {env_name}"}
+        except Exception:
+            pass
+
+        return {"success": True, "message": "Secret detected — review manually",
+                "note": "Use wrangler secret put <NAME> to store securely, then reference as env.NAME"}
+
+    # ── AI-Assisted Fix Generation ────────────────────────
+
+    def ai_generate_fix(self, finding: dict, ollama_client=None) -> dict:
+        """Use Ollama to generate a specific fix for a finding."""
+        if not ollama_client or not ollama_client.is_available():
+            return {"success": False, "error": "Ollama not available"}
+
+        file_path = finding.get("file", "")
+        content = ""
+        if file_path and Path(file_path).exists():
+            try:
+                content = Path(file_path).read_text(encoding="utf-8", errors="ignore")[:4000]
+            except Exception:
+                pass
+
+        prompt = (
+            f"Fix this security issue:\n"
+            f"Type: {finding.get('check', '')}\n"
+            f"Issue: {finding.get('message', '')}\n"
+            f"File: {file_path}\n"
+        )
+        if content:
+            prompt += f"\nFile content:\n```\n{content}\n```\n"
+        prompt += "\nProvide the exact code fix. Reply with ONLY the fixed code, no explanation."
+
+        context = "You are a senior security engineer. Provide the exact corrected code."
+        response = ollama_client._chat(prompt, context)
+        if response:
+            return {"success": True, "fix_code": response, "file": file_path}
+        return {"success": False, "error": "Could not generate fix"}
 
     def _fix_vars_secrets(self, finding: dict, project_path: str) -> dict:
         config_path = Path(finding.get("file", Path(project_path) / "wrangler.toml"))

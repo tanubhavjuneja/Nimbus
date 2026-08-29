@@ -165,6 +165,25 @@ class Bridge(QObject):
         self._run_worker(call_id, self.cli.scan_directory_secrets, directory)
         return json.dumps({"success": True, "call_id": call_id})
 
+    @Slot(str, str, result=str)
+    def fix_finding(self, finding_json: str, project_path: str) -> str:
+        try:
+            finding = json.loads(finding_json)
+            return json.dumps(self.cli.fix_finding(finding, project_path))
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)})
+
+    @Slot(str, str, result=str)
+    def ai_generate_fix(self, finding_json: str, project_path: str) -> str:
+        try:
+            finding = json.loads(finding_json)
+            if not self.ollama or not self.ollama.is_available():
+                return json.dumps({"success": False, "error": "Ollama not available"})
+            result = self.cli.ai_generate_fix(finding, self.ollama)
+            return json.dumps(result)
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)})
+
     @Slot(str, result=str)
     def scan_dependencies(self, directory: str) -> str:
         call_id = "depscan"

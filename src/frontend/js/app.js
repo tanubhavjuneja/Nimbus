@@ -941,7 +941,7 @@ function renderScanResults(findings, label, scannedDir) {
         <div class="card" style="margin-top:12px;border-color:rgba(252,165,165,0.2)">
             <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
                 <div style="font-size:24px;color:var(--red)">&#9888;</div>
-                <div>
+                <div style="flex:1">
                     <div style="font-size:14px;font-weight:600">${findings.length} issue${findings.length !== 1 ? 's' : ''} found</div>
                     <div style="font-size:12px;color:var(--text3)">
                         ${crit.length > 0 ? `<span style="color:var(--red)">${crit.length} critical</span> ` : ''}
@@ -950,11 +950,19 @@ function renderScanResults(findings, label, scannedDir) {
                         ${low.length > 0 ? `<span style="color:var(--text3)">${low.length} low</span>` : ''}
                     </div>
                 </div>
+                <button class="btn btn-glow btn-sm" onclick="fixAllFindings('${scannedDir.replace(/\\/g, '\\\\')}')">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    Fix All Auto
+                </button>
             </div>
-            ${findings.map(f => {
+            <div id="fixAllStatus"></div>
+            ${findings.map((f, i) => {
                 const cls = f.severity === 'Critical' ? 'crit' : f.severity === 'High' ? 'high' : 'med';
+                const hasFix = ['VarsSecrets','DevVarsGitignore','AccountIdExposed','HardcodedSecret',
+                    'VulnDependency','EnvExposure','EnvFilePresent','MissingHeader',
+                    'CORSWildcard','CORSEvilOrigin','CORSCredentialsWildcard','SecretScan'].includes(f.check);
                 return `
-                <div class="warn ${cls}" style="margin-bottom:8px">
+                <div class="warn ${cls}" style="margin-bottom:8px" id="finding-${i}">
                     <div class="warn-head">
                         <div class="warn-badge ${cls}">${f.severity === 'Critical' ? '!!' : f.severity === 'High' ? '!' : 'i'}</div>
                         <div style="flex:1;min-width:0">
@@ -967,10 +975,87 @@ function renderScanResults(findings, label, scannedDir) {
                         <div class="warn-explain">${f.simple_explanation || ''}</div>
                         ${f.matched ? `<div style="margin-top:6px;font-family:monospace;font-size:11px;padding:6px 10px;background:rgba(0,0,0,0.2);border-radius:4px;color:var(--red);word-break:break-all">${f.matched}</div>` : ''}
                         ${f.fix ? `<div style="margin-top:8px;font-size:12px;color:var(--green)"><strong>Fix:</strong> ${f.fix}</div>` : ''}
+                        <div style="display:flex;gap:6px;margin-top:10px">
+                            ${hasFix ? `<button class="btn btn-glow btn-sm" onclick="autoFixFinding(${i}, '${scannedDir.replace(/\\/g, '\\\\')}')">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                                Auto Fix
+                            </button>` : ''}
+                            <button class="btn btn-ghost btn-sm" onclick="aiFixFinding(${i}, '${scannedDir.replace(/\\/g, '\\\\')}')">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 14v-4m0-4h.01"/></svg>
+                                AI Fix
+                            </button>
+                        </div>
+                        <div id="fixStatus-${i}" style="margin-top:8px"></div>
                     </div>
                 </div>`;
             }).join('')}
         </div>`;
+
+    window._lastFindings = findings;
+}
+
+async function autoFixFinding(index, projectDir) {
+    const f = window._lastFindings[index];
+    if (!f) return;
+    const statusEl = $(`fixStatus-${index}`);
+    if (statusEl) statusEl.innerHTML = '<span class="spin" style="width:14px;height:14px;display:inline-block"></span> Fixing...';
+    const r = await API.call('fix_finding', JSON.stringify(f), projectDir);
+    if (statusEl) {
+        if (r.success) {
+            statusEl.innerHTML = `<div style="padding:8px 12px;border-radius:6px;background:rgba(126,232,192,0.1);border:1px solid rgba(126,232,192,0.2);font-size:12px">
+                <span style="color:var(--green)">&#10003; ${r.message}</span>
+                ${r.note ? `<div style="margin-top:4px;color:var(--text3)">${r.note}</div>` : ''}
+            </div>`;
+        } else {
+            statusEl.innerHTML = `<div style="padding:8px 12px;border-radius:6px;background:rgba(252,165,165,0.1);border:1px solid rgba(252,165,165,0.2);font-size:12px;color:var(--red)">${r.error}</div>`;
+        }
+    }
+}
+
+async function aiFixFinding(index, projectDir) {
+    const f = window._lastFindings[index];
+    if (!f) return;
+    const statusEl = $(`fixStatus-${index}`);
+    if (statusEl) statusEl.innerHTML = '<span class="spin" style="width:14px;height:14px;display:inline-block"></span> AI generating fix...';
+    const r = await API.call('ai_generate_fix', JSON.stringify(f), projectDir);
+    if (statusEl) {
+        if (r.success && r.fix_code) {
+            statusEl.innerHTML = `<div style="padding:10px 12px;border-radius:6px;background:rgba(114,184,250,0.1);border:1px solid rgba(114,184,250,0.2)">
+                <div style="font-size:11px;font-weight:600;color:var(--blue);margin-bottom:6px">AI Suggested Fix:</div>
+                <pre style="margin:0;font-size:11px;white-space:pre-wrap;background:rgba(0,0,0,0.2);padding:8px;border-radius:4px;color:var(--text)">${escHtml(r.fix_code)}</pre>
+                <button class="btn btn-glow btn-sm" style="margin-top:8px" onclick="applyAIFix(${index}, this)">Apply to File</button>
+            </div>`;
+        } else {
+            statusEl.innerHTML = `<div style="padding:8px 12px;border-radius:6px;background:rgba(252,165,165,0.1);border:1px solid rgba(252,165,165,0.2);font-size:12px;color:var(--red)">${r.error || 'Could not generate fix'}</div>`;
+        }
+    }
+}
+
+async function fixAllFindings(projectDir) {
+    const findings = window._lastFindings || [];
+    const statusEl = $('fixAllStatus');
+    if (!statusEl || findings.length === 0) return;
+    let fixed = 0, failed = 0;
+    statusEl.innerHTML = `<div style="padding:8px 12px;border-radius:6px;background:rgba(114,184,250,0.1);border:1px solid rgba(114,184,250,0.2);font-size:12px;color:var(--blue)">Fixing ${findings.length} findings...</div>`;
+    for (let i = 0; i < findings.length; i++) {
+        const f = findings[i];
+        if (['VarsSecrets','DevVarsGitignore','AccountIdExposed','HardcodedSecret',
+             'VulnDependency','EnvExposure','EnvFilePresent','MissingHeader',
+             'CORSWildcard','CORSEvilOrigin','CORSCredentialsWildcard','SecretScan'].includes(f.check)) {
+            const r = await API.call('fix_finding', JSON.stringify(f), projectDir);
+            if (r.success) fixed++; else failed++;
+        }
+    }
+    statusEl.innerHTML = `<div style="padding:10px 12px;border-radius:6px;background:rgba(126,232,192,0.1);border:1px solid rgba(126,232,192,0.2);font-size:12px">
+        <span style="color:var(--green)">&#10003; Fixed ${fixed} findings</span>
+        ${failed > 0 ? `<span style="color:var(--orange);margin-left:8px">${failed} need manual fix</span>` : ''}
+    </div>`;
+}
+
+function applyAIFix(index, btn) {
+    const f = window._lastFindings[index];
+    if (!f || !f.file) return;
+    toast('AI fix copied — apply the code manually in your editor', 'info');
 }
 
 async function runSpecificScan(type) {
