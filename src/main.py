@@ -117,8 +117,8 @@ class Bridge(QObject):
         else:
             QTimer.singleShot(2000, self._poll_login)
 
-    @Slot(str, result=str)
-    def list_workers(self, _unused: str = "") -> str:
+    @Slot(result=str)
+    def list_workers(self) -> str:
         call_id = "workers"
         self._run_worker(call_id, self.cli.list_workers)
         return json.dumps({"success": True, "call_id": call_id})
@@ -164,6 +164,26 @@ class Bridge(QObject):
         call_id = "secretscan"
         self._run_worker(call_id, self.cli.scan_directory_secrets, directory)
         return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(str, result=str)
+    def save_local_path(self, project_name: str) -> str:
+        """Browse and save a local directory path for a project."""
+        try:
+            import os
+            app = QApplication.instance()
+            d = QFileDialog.getExistingDirectory(app, "Select Local Project Directory")
+            if d:
+                self.cli._project_local_paths[project_name] = d
+                return json.dumps({"success": True, "path": d})
+            return json.dumps({"success": False, "error": "No directory selected"})
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)})
+
+    @Slot(str, result=str)
+    def get_local_path(self, project_name: str) -> str:
+        """Get saved local directory path for a project."""
+        p = self.cli._project_local_paths.get(project_name, "")
+        return json.dumps({"success": True, "path": p})
 
     @Slot(str, str, result=str)
     def fix_finding(self, finding_json: str, project_path: str) -> str:

@@ -364,10 +364,39 @@ async function showProjectDetail(type, name) {
         S.detailData.loading = false;
         S.detailData.error = r?.error || 'Failed to load details';
     }
+    const lp = await API.call('get_local_path', name);
+    if (lp?.success && lp.path) S.detailData.localPath = lp.path;
     render();
 }
 
 function closeDetail() { S.detailData = null; render(); }
+
+async function browseLocalPath(type, name) {
+    const r = await API.call('save_local_path', name);
+    if (r?.success && r.path) {
+        if (S.detailData && S.detailData.name === name) {
+            S.detailData.localPath = r.path;
+        }
+        toast(`Local path set for ${name}`, 'success');
+        render();
+    }
+}
+
+function runProjectScan(dir) {
+    showScanDirModal('Full Security Audit', async () => {
+        const scanDir = $('scanDirInput')?.value?.trim() || dir;
+        if (!scanDir) { toast('Select a directory', 'error'); return; }
+        hideModal();
+        toast('Running full audit...', 'info');
+        const el = $('auditResults');
+        if (!el) return;
+        el.innerHTML = '<div style="text-align:center;padding:30px"><span class="spin" style="width:24px;height:24px"></span><div style="font-size:12px;color:var(--text3);margin-top:8px">Scanning...</div></div>';
+        const r = await API.call('full_security_audit', scanDir);
+        if (!r.success) { el.innerHTML = `<div class="warn med" style="margin-top:12px"><div class="warn-title">Scan failed: ${r.error}</div></div>`; return; }
+        const findings = r.findings || r.data?.findings || [];
+        renderScanResults(findings, 'Full Security Audit', scanDir);
+    });
+}
 
 function renderDetail() {
     if (!S.detailData) return '';
@@ -376,7 +405,24 @@ function renderDetail() {
     if (d.error) return `<div class="detail-panel"><div class="detail-header"><div class="detail-title">${d.name}</div><button class="detail-close" onclick="closeDetail()">&times;</button></div><p style="color:var(--red)">${d.error}</p></div>`;
 
     const info = d.data || {};
+    const localPath = d.localPath || '';
+    const isProject = d.type === 'pages' || d.type === 'worker';
     let html = `<div class="detail-panel"><div class="detail-header"><div class="detail-title">${d.name}</div><button class="detail-close" onclick="closeDetail()">&times;</button></div>`;
+
+    if (isProject) {
+        html += `
+        <div style="margin-bottom:14px;padding:12px;background:rgba(126,232,192,0.06);border:1px solid rgba(126,232,192,0.15);border-radius:8px">
+            <div style="display:flex;align-items:center;gap:8px">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+                <div style="flex:1">
+                    <div style="font-size:11px;font-weight:600;color:var(--text2)">Local Directory</div>
+                    <div style="font-size:11px;color:var(--text3);font-family:monospace">${localPath || 'Not set — click Browse to link your local project'}</div>
+                </div>
+                <button class="btn btn-ghost btn-sm" onclick="browseLocalPath('${d.type}','${d.name}')">Browse</button>
+            </div>
+            ${localPath ? `<button class="btn btn-red btn-sm" style="margin-top:8px" onclick="runProjectScan('${localPath.replace(/\\/g, '\\\\')}')">Run Full Audit on This Project</button>` : ''}
+        </div>`;
+    }
 
     if (d.type === 'pages') {
         html += `<div class="detail-grid">
@@ -466,13 +512,7 @@ function pServices() {
 
         <div class="sec-head">
             <span class="sec-title">Pages Projects</span>
-            <div style="display:flex;gap:6px">
-                <button class="btn btn-ghost btn-sm" onclick="browseProjectDir()" title="Set project directory for scans">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
-                    ${S.scanPath ? S.scanPath.split(/[\\/]/).pop() : 'Set Path'}
-                </button>
-                <button class="btn btn-green btn-sm" onclick="showCreatePages()">+ New Pages Project</button>
-            </div>
+            <button class="btn btn-green btn-sm" onclick="showCreatePages()">+ New Pages Project</button>
         </div>
         ${S.pages.length === 0 ? '<p style="color:var(--text3);margin-bottom:14px">No Pages projects.</p>' : `
         <div class="tbl"><table>
@@ -854,11 +894,12 @@ async function createWorker() {
 async function showWorkerDetail(name) {
     S.detailData = { type: 'worker', name, loading: true, data: null };
     render();
-    const [routesR] = await Promise.all([API.call('get_worker_routes', name)]);
+    const [routesR, lpR] = await Promise.all([API.call('get_worker_routes', name), API.call('get_local_path', name)]);
     const data = { name };
     if (routesR.success) data.routes = routesR.data;
     S.detailData.data = data;
     S.detailData.loading = false;
+    if (lpR?.success && lpR.path) S.detailData.localPath = lpR.path;
     render();
 }
 
@@ -1316,7 +1357,8 @@ const LOAD_STEPS = [
     'Fetching secrets',
     'Running security scan',
     'Loading warning history',
-    'Checking Ollama AI'
+    'Checking Ollama AI',
+    'Fetching Workers'
 ];
 
 async function refresh() {
@@ -1348,7 +1390,16 @@ async function refresh() {
     $('loadingText').textContent = 'All loaded!';
     setTimeout(() => hideLoading(), 200);
 
-    const get = (r, fallback) => r.status === 'fulfilled' && r.value?.success ? (Array.isArray(r.value.data) ? r.value.data : r.value.data || fallback) : fallback;
+    const get = (r, fallback) => {
+        if (r.status !== 'fulfilled') return fallback;
+        const v = r.value;
+        if (!v) return fallback;
+        if (typeof v === 'object' && v.success !== undefined) {
+            return v.success ? (Array.isArray(v.data) ? v.data : (v.data || fallback)) : fallback;
+        }
+        if (Array.isArray(v)) return v;
+        return fallback;
+    };
 
     S.pages = get(results[0], []);
     S.d1 = get(results[1], []);

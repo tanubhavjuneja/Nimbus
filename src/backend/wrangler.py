@@ -21,6 +21,7 @@ class WranglerCLI:
         self._account_name: Optional[str] = None
         self._logged_in = False
         self._listeners: list[Callable] = []
+        self._project_local_paths: dict = {}
 
     def on_event(self, callback: Callable):
         self._listeners.append(callback)
