@@ -372,18 +372,389 @@ class WranglerCLI:
                     finding_id = f"{f}:{line_no}:{secret_type}"
                     if not any(x.get("id") == finding_id for x in findings):
                         findings.append({
-                            "id": finding_id,
-                            "check": "SecretScan",
-                            "severity": "Critical" if "Private Key" in secret_type or "Live" in secret_type else "High",
-                            "message": f"{secret_type} found in {f.name}",
-                            "simple_explanation": f"A {secret_type.lower()} was found in your code. If this is a real credential, anyone with access to this code can use it.",
-                            "file": str(f),
-                            "line": line_no,
-                            "matched": matched_text,
-                            "terms": ["API Token"],
-                            "fix": "Move this to environment variables or use wrangler secret put."
-                        })
+                        "id": finding_id,
+                        "check": "SecretScan",
+                        "severity": "Critical" if "Private Key" in secret_type or "Live" in secret_type else "High",
+                        "message": f"{secret_type} found in {f.name}",
+                        "simple_explanation": f"A {secret_type.lower()} was found in your code. If this is a real credential, anyone with access to this code can use it.",
+                        "file": str(f),
+                        "line": line_no,
+                        "matched": matched_text,
+                        "terms": ["API Token"],
+                        "fix": "Move this to environment variables or use wrangler secret put."
+                    })
         return findings
+
+    # ── Dependency Vulnerability Scanner ───────────────────
+
+    VULN_DB = {
+        "lodash": {"CVE": "CVE-2021-23337", "severity": "High", "fix": "Upgrade to >= 4.17.21"},
+        "minimist": {"CVE": "CVE-2021-44906", "severity": "Critical", "fix": "Upgrade to >= 1.2.6"},
+        "node-fetch": {"CVE": "CVE-2022-0235", "severity": "High", "fix": "Upgrade to >= 2.6.7"},
+        "axios": {"CVE": "CVE-2023-45857", "severity": "Medium", "fix": "Upgrade to >= 1.6.0"},
+        "express": {"CVE": "CVE-2024-29041", "severity": "Medium", "fix": "Upgrade to >= 4.19.2"},
+        "ws": {"CVE": "CVE-2024-37890", "severity": "High", "fix": "Upgrade to >= 8.17.1"},
+        "jsonwebtoken": {"CVE": "CVE-2022-23529", "severity": "Critical", "fix": "Upgrade to >= 9.0.0"},
+        "cookie": {"CVE": "CVE-2024-47764", "severity": "Medium", "fix": "Upgrade to >= 0.7.0"},
+        "tar": {"CVE": "CVE-2024-28863", "severity": "High", "fix": "Upgrade to >= 6.2.1"},
+        "undici": {"CVE": "CVE-2024-30260", "severity": "High", "fix": "Upgrade to >= 6.11.1"},
+        "requests": {"CVE": "CVE-2023-32681", "severity": "Medium", "fix": "Upgrade to >= 2.31.0"},
+        "urllib3": {"CVE": "CVE-2023-45803", "severity": "Medium", "fix": "Upgrade to >= 2.0.7"},
+        "cryptography": {"CVE": "CVE-2024-26130", "severity": "Critical", "fix": "Upgrade to >= 42.0.4"},
+        "pillow": {"CVE": "CVE-2024-28219", "severity": "Critical", "fix": "Upgrade to >= 10.3.0"},
+        "flask": {"CVE": "CVE-2023-30861", "severity": "Medium", "fix": "Upgrade to >= 2.3.2"},
+        "django": {"CVE": "CVE-2024-24680", "severity": "High", "fix": "Upgrade to >= 4.2.10"},
+        "jinja2": {"CVE": "CVE-2024-22195", "severity": "Medium", "fix": "Upgrade to >= 3.1.3"},
+        "aiohttp": {"CVE": "CVE-2024-23334", "severity": "High", "fix": "Upgrade to >= 3.9.2"},
+        "tornado": {"CVE": "CVE-2024-52804", "severity": "Medium", "fix": "Upgrade to >= 6.4.2"},
+    }
+
+    def scan_dependencies(self, directory: str) -> list[dict]:
+        """Scan package.json and requirements.txt for known vulnerable packages."""
+        findings = []
+        dir_path = Path(directory)
+
+        # Scan package.json (npm)
+        pkg_json = dir_path / "package.json"
+        if pkg_json.exists():
+            try:
+                pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
+                all_deps = {}
+                all_deps.update(pkg.get("dependencies", {}))
+                all_deps.update(pkg.get("devDependencies", {}))
+                for name, version_spec in all_deps.items():
+                    clean_ver = re.sub(r'[^0-9.]', '', version_spec.split('^')[0].split('~')[0].split('>')[0].split('<')[0])
+                    if name.lower() in self.VULN_DB:
+                        vuln = self.VULN_DB[name.lower()]
+                        findings.append({
+                            "check": "VulnDependency",
+                            "severity": vuln["severity"],
+                            "message": f"Vulnerable {name} {version_spec}: {vuln['CVE']}",
+                            "simple_explanation": f"The package {name} version {version_spec} has a known security vulnerability ({vuln['CVE']}).",
+                            "file": str(pkg_json),
+                            "fix": vuln["fix"],
+                            "terms": []
+                        })
+            except Exception:
+                pass
+
+        # Scan requirements.txt (pip)
+        req_txt = dir_path / "requirements.txt"
+        if req_txt.exists():
+            try:
+                for line in req_txt.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    match = re.match(r'^([a-zA-Z0-9_-]+)\s*([=><!~]+)?\s*(.+)?', line)
+                    if match:
+                        name = match.group(1).lower()
+                        version_spec = (match.group(2) or '') + (match.group(3) or '')
+                        if name in self.VULN_DB:
+                            vuln = self.VULN_DB[name]
+                            findings.append({
+                                "check": "VulnDependency",
+                                "severity": vuln["severity"],
+                                "message": f"Vulnerable {name} {version_spec}: {vuln['CVE']}",
+                                "simple_explanation": f"The package {name} version {version_spec} has a known security vulnerability ({vuln['CVE']}).",
+                                "file": str(req_txt),
+                                "fix": vuln["fix"],
+                                "terms": []
+                            })
+            except Exception:
+                pass
+
+        return findings
+
+    # ── .env Exposure Checker ─────────────────────────────
+
+    def scan_env_exposure(self, directory: str) -> list[dict]:
+        """Check if .env files exist and are not properly gitignored."""
+        findings = []
+        dir_path = Path(directory)
+        gitignore_path = dir_path / ".gitignore"
+        gitignore_content = ""
+        if gitignore_path.exists():
+            try:
+                gitignore_content = gitignore_path.read_text(encoding="utf-8").lower()
+            except Exception:
+                pass
+
+        env_files = [".env", ".env.local", ".env.production", ".env.development", ".dev.vars"]
+        for env_name in env_files:
+            env_path = dir_path / env_name
+            if env_path.exists():
+                if env_name not in gitignore_content:
+                    findings.append({
+                        "check": "EnvExposure",
+                        "severity": "Critical",
+                        "message": f"{env_name} exists but is NOT in .gitignore",
+                        "simple_explanation": f"Your {env_name} file contains secrets and will be uploaded to GitHub if you push. This exposes all your passwords and API keys publicly.",
+                        "file": str(env_path),
+                        "fix": f"Add '{env_name}' to your .gitignore file immediately.",
+                        "terms": []
+                    })
+                # Check if env file has actual content
+                try:
+                    content = env_path.read_text(encoding="utf-8", errors="ignore")
+                    lines = [l for l in content.splitlines() if l.strip() and not l.strip().startswith('#') and '=' in l]
+                    if lines:
+                        findings.append({
+                            "check": "EnvFilePresent",
+                            "severity": "Medium",
+                            "message": f"{env_name} contains {len(lines)} variable(s) — consider moving to Cloudflare secrets",
+                            "simple_explanation": f"Your {env_name} has {len(lines)} variables. Some may contain secrets that should be stored in Cloudflare's encrypted secret store instead.",
+                            "file": str(env_path),
+                            "fix": "Use 'wrangler secret put <NAME>' for sensitive values.",
+                            "terms": []
+                        })
+                except Exception:
+                    pass
+        return findings
+
+    # ── Security Headers Checker ──────────────────────────
+
+    def scan_security_headers(self, directory: str) -> list[dict]:
+        """Check worker source code for missing security headers."""
+        findings = []
+        dir_path = Path(directory)
+        src_dirs = [dir_path / "src", dir_path]
+        checked_files = set()
+
+        header_checks = [
+            (r'Content-Security-Policy', "Content Security Policy (CSP)", "Protects against XSS by controlling which resources can load"),
+            (r'X-Frame-Options', "X-Frame-Options", "Prevents clickjacking by controlling if site can be framed"),
+            (r'X-Content-Type-Options', "X-Content-Type-Options", "Prevents MIME-type sniffing attacks"),
+            (r'Strict-Transport-Security', "HSTS", "Forces browsers to use HTTPS"),
+            (r'Referrer-Policy', "Referrer-Policy", "Controls how much referrer info is shared"),
+            (r'Permissions-Policy', "Permissions-Policy", "Controls which browser features can be used"),
+            (r'X-XSS-Protection', "X-XSS-Protection", "Legacy XSS filter for older browsers"),
+        ]
+
+        for src_dir in src_dirs:
+            if not src_dir.exists():
+                continue
+            for ext in ["*.js", "*.ts", "*.mjs", "*.py"]:
+                for f in src_dir.rglob(ext):
+                    if f in checked_files or any(part in self.IGNORE_DIRS for part in f.parts):
+                        continue
+                    checked_files.add(f)
+                    if f.stat().st_size > 500_000:
+                        continue
+                    try:
+                        content = f.read_text(encoding="utf-8", errors="ignore")
+                    except Exception:
+                        continue
+
+                    has_response = bool(re.search(r'response|Response|new Response|JSONResponse', content))
+                    if not has_response:
+                        continue
+
+                    for pattern, header_name, description in header_checks:
+                        if not re.search(pattern, content, re.IGNORECASE):
+                            findings.append({
+                                "check": "MissingHeader",
+                                "severity": "Medium",
+                                "message": f"Missing {header_name} header in {f.name}",
+                                "simple_explanation": f"Your worker response doesn't set the {header_name} header. {description}.",
+                                "file": str(f),
+                                "fix": f"Add '{header_name}' header to your response. Example: headers.set('{header_name}', 'value')",
+                                "terms": []
+                            })
+        return findings
+
+    # ── CORS Misconfiguration Checker ────────────────────
+
+    def scan_cors(self, directory: str) -> list[dict]:
+        """Check for overly permissive CORS configurations."""
+        findings = []
+        dir_path = Path(directory)
+        checked_files = set()
+
+        for ext in ["*.js", "*.ts", "*.mjs", "*.py"]:
+            for f in dir_path.rglob(ext):
+                if f in checked_files or any(part in self.IGNORE_DIRS for part in f.parts):
+                    continue
+                checked_files.add(f)
+                if f.stat().st_size > 500_000:
+                    continue
+                try:
+                    content = f.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    continue
+
+                # Check for wildcard CORS
+                if re.search(r"""Access-Control-Allow-Origin.*\*|['"]?\*['"]?""", content):
+                    findings.append({
+                        "check": "CORSWildcard",
+                        "severity": "High",
+                        "message": f"CORS allows all origins (*) in {f.name}",
+                        "simple_explanation": "Your code allows any website to make requests to your API. This could let malicious sites use your API on behalf of your users.",
+                        "file": str(f),
+                        "fix": "Replace '*' with specific allowed origins. Example: headers.set('Access-Control-Allow-Origin', 'https://yourdomain.com')",
+                        "terms": []
+                    })
+
+                # Check for null origin
+                if re.search(r"""Access-Control-Allow-Origin.*null|['"]null['"]""", content):
+                    findings.append({
+                        "check": "CORSEvilOrigin",
+                        "severity": "High",
+                        "message": f"CORS allows null origin in {f.name}",
+                        "simple_explanation": "The 'null' origin is exploited by attackers using sandboxed iframes. This is almost never intentional.",
+                        "file": str(f),
+                        "fix": "Remove 'null' from allowed origins.",
+                        "terms": []
+                    })
+
+                # Check for credentials with wildcard
+                if re.search(r'Allow-Credentials.*true', content, re.IGNORECASE) and re.search(r'Access-Control-Allow-Origin.*\*', content):
+                    findings.append({
+                        "check": "CORSCredentialsWildcard",
+                        "severity": "Critical",
+                        "message": f"CORS credentials enabled with wildcard origin in {f.name}",
+                        "simple_explanation": "You're allowing credentials (cookies/auth) from ANY origin. This is a critical security vulnerability.",
+                        "file": str(f),
+                        "fix": "Use specific origins when Allow-Credentials is true. Never combine credentials with '*'.",
+                        "terms": []
+                    })
+        return findings
+
+    # ── R2 Public Bucket Checker ──────────────────────────
+
+    def scan_r2_public(self) -> list[dict]:
+        """Check if any R2 buckets are publicly accessible."""
+        findings = []
+        buckets = self.list_r2_buckets()
+        for bucket in buckets:
+            name = bucket.get("name", "")
+            if not name:
+                continue
+            result = self._run(["r2", "bucket", "detail", name])
+            if result["success"]:
+                raw = result.get("raw", "")
+                if "public" in raw.lower():
+                    findings.append({
+                        "check": "PublicBucket",
+                        "severity": "High",
+                        "message": f"R2 bucket '{name}' may be publicly accessible",
+                        "simple_explanation": f"The bucket '{name}' appears to have public access configured. Anyone on the internet could read or list your files.",
+                        "file": "",
+                        "fix": "Review bucket permissions and remove public access unless intentionally serving public files.",
+                        "terms": []
+                    })
+        return findings
+
+    # ── AI Code Review (Ollama-powered) ───────────────────
+
+    def ai_code_review(self, directory: str, ollama_client=None) -> list[dict]:
+        """Use Ollama to review source code for security vulnerabilities."""
+        findings = []
+        if not ollama_client or not ollama_client.is_available():
+            return findings
+
+        dir_path = Path(directory)
+        review_files = []
+
+        for ext in ["*.js", "*.ts", "*.mjs", "*.py"]:
+            for f in dir_path.rglob(ext):
+                if any(part in self.IGNORE_DIRS for part in f.parts):
+                    continue
+                if f.stat().st_size > 50_000:
+                    continue
+                try:
+                    content = f.read_text(encoding="utf-8", errors="ignore")
+                    if len(content.strip()) > 50:
+                        review_files.append((f, content))
+                except Exception:
+                    continue
+
+        for f, content in review_files[:5]:  # Limit to 5 files to avoid overloading Ollama
+            prompt = (
+                f"Review this {f.suffix} file for security vulnerabilities. "
+                f"Focus on: SQL injection, XSS, CSRF, authentication bypass, "
+                f"insecure deserialization, path traversal, command injection, "
+                f"hardcoded credentials, and insecure configurations. "
+                f"Reply in JSON array format: "
+                '[{"severity":"Critical/High/Medium/Low","title":"issue title","line":"line number or range","description":"what is wrong","fix":"how to fix"}] '
+                f"If no issues found, return an empty array []. Be concise."
+            )
+            context = f"You are a senior security engineer reviewing code. Be thorough but only report real issues, not style preferences."
+            full_prompt = f"File: {f.name}\n\n```\n{content[:4000]}\n```"
+
+            response = ollama_client._chat(full_prompt, context)
+            if not response:
+                continue
+
+            try:
+                start = response.find("[")
+                end = response.rfind("]") + 1
+                if start >= 0 and end > start:
+                    issues = json.loads(response[start:end])
+                    for issue in issues:
+                        findings.append({
+                            "check": "AICodeReview",
+                            "severity": issue.get("severity", "Medium"),
+                            "message": f"{issue.get('title', 'Code issue')} in {f.name}",
+                            "simple_explanation": issue.get("description", ""),
+                            "file": str(f),
+                            "line": issue.get("line", ""),
+                            "fix": issue.get("fix", ""),
+                            "terms": [],
+                            "ai_generated": True
+                        })
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        return findings
+
+    # ── Comprehensive Security Audit ──────────────────────
+
+    def full_security_audit(self, directory: str, ollama_client=None) -> dict:
+        """Run all security scanners and return combined results."""
+        all_findings = []
+
+        # 1. Config scan
+        all_findings.extend(self.scan_local_config(directory))
+
+        # 2. Secret scan
+        all_findings.extend(self.scan_directory_secrets(directory))
+
+        # 3. Dependency scan
+        all_findings.extend(self.scan_dependencies(directory))
+
+        # 4. .env exposure
+        all_findings.extend(self.scan_env_exposure(directory))
+
+        # 5. Security headers
+        all_findings.extend(self.scan_security_headers(directory))
+
+        # 6. CORS check
+        all_findings.extend(self.scan_cors(directory))
+
+        # 7. AI code review (if Ollama available)
+        ai_findings = []
+        if ollama_client and ollama_client.is_available():
+            ai_findings = self.ai_code_review(directory, ollama_client)
+            all_findings.extend(ai_findings)
+
+        # Count by severity
+        summary = {
+            "total": len(all_findings),
+            "critical": sum(1 for f in all_findings if f.get("severity") == "Critical"),
+            "high": sum(1 for f in all_findings if f.get("severity") == "High"),
+            "medium": sum(1 for f in all_findings if f.get("severity") == "Medium"),
+            "low": sum(1 for f in all_findings if f.get("severity") == "Low"),
+            "ai_reviewed": len(ai_findings),
+            "scanners": [
+                "Config Scan", "Secret Scanner", "Dependency Check",
+                "Environment Exposure", "Security Headers", "CORS Check"
+            ]
+        }
+        if ollama_client and ollama_client.is_available():
+            summary["scanners"].append("AI Code Review")
+
+        return {"success": True, "findings": all_findings, "summary": summary}
 
     # ── Project Details ───────────────────────────────────
 

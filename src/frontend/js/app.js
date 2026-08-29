@@ -555,14 +555,40 @@ function pServices() {
             <div style="font-size:12px;color:var(--text3)">Select a local directory with wrangler.toml or package.json to deploy</div>
         </div>
 
-        <div class="sec-head" style="margin-top:20px">
-            <span class="sec-title">Secret Scanner</span>
-            <button class="btn btn-red btn-sm" onclick="showSecretScan()">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                Scan Directory
+        <div class="sec-head" style="margin-top:24px">
+            <span class="sec-title">Security Audit</span>
+            <button class="btn btn-red btn-sm" onclick="showFullAudit()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                Full Audit
             </button>
         </div>
-        <div id="secretScanResults"></div>
+        <div class="grid g3" style="margin-bottom:16px">
+            <div class="card svc-card" onclick="showSpecificScan('secrets')" style="cursor:pointer;text-align:center;padding:18px">
+                <div style="font-size:11px;font-weight:600;color:var(--red);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Secrets</div>
+                <div style="font-size:11px;color:var(--text3)">API keys, tokens, passwords</div>
+            </div>
+            <div class="card svc-card" onclick="showSpecificScan('dependencies')" style="cursor:pointer;text-align:center;padding:18px">
+                <div style="font-size:11px;font-weight:600;color:var(--orange);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Dependencies</div>
+                <div style="font-size:11px;color:var(--text3)">Known vulnerable packages</div>
+            </div>
+            <div class="card svc-card" onclick="showSpecificScan('env')" style="cursor:pointer;text-align:center;padding:18px">
+                <div style="font-size:11px;font-weight:600;color:var(--yellow);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Environment</div>
+                <div style="font-size:11px;color:var(--text3)">.env exposure check</div>
+            </div>
+            <div class="card svc-card" onclick="showSpecificScan('headers')" style="cursor:pointer;text-align:center;padding:18px">
+                <div style="font-size:11px;font-weight:600;color:var(--blue);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Headers</div>
+                <div style="font-size:11px;color:var(--text3)">Missing security headers</div>
+            </div>
+            <div class="card svc-card" onclick="showSpecificScan('cors')" style="cursor:pointer;text-align:center;padding:18px">
+                <div style="font-size:11px;font-weight:600;color:var(--cyan);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">CORS</div>
+                <div style="font-size:11px;color:var(--text3)">Misconfigured CORS policies</div>
+            </div>
+            <div class="card svc-card" onclick="showSpecificScan('codereview')" style="cursor:pointer;text-align:center;padding:18px">
+                <div style="font-size:11px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">AI Review</div>
+                <div style="font-size:11px;color:var(--text3)">Ollama-powered code audit</div>
+            </div>
+        </div>
+        <div id="auditResults"></div>
     `;
 }
 
@@ -836,88 +862,146 @@ async function showWorkerDetail(name) {
     render();
 }
 
-// ═══ Secret Scanner ═══════════════════════════
+// ═══ Security Scanners ═════════════════════════
 
-function showSecretScan() {
+const SCAN_LABELS = {
+    secrets: 'Secret Scanner',
+    dependencies: 'Dependency Check',
+    env: 'Environment Exposure',
+    headers: 'Security Headers',
+    cors: 'CORS Check',
+    codereview: 'AI Code Review',
+    fullaudit: 'Full Security Audit'
+};
+
+function showScanDirModal(title, onRun) {
     $('modal').innerHTML = `
-        <h3>Scan for Secrets</h3>
-        <p>Scan a directory for exposed API keys, tokens, passwords, and other secrets. Like GitGuardian but local.</p>
+        <h3>${title}</h3>
+        <p>Select the project directory to scan.</p>
         <div style="margin:16px 0">
-            <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:6px">Directory to Scan</label>
+            <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:6px">Directory</label>
             <div style="display:flex;gap:8px">
-                <input class="inp" id="scanDir" placeholder="No directory selected" readonly style="flex:1" />
-                <button class="btn btn-glow btn-sm" onclick="browseScanDir()">Browse</button>
+                <input class="inp" id="scanDirInput" placeholder="No directory selected" readonly style="flex:1" />
+                <button class="btn btn-glow btn-sm" onclick="browseScanDirModal()">Browse</button>
             </div>
         </div>
         <div class="modal-acts">
             <button class="btn btn-ghost" onclick="hideModal()">Cancel</button>
-            <button class="btn btn-red" onclick="runSecretScan()">Scan Now</button>
+            <button class="btn btn-red" onclick="${onRun}()">Scan Now</button>
         </div>`;
     $('modalBg').style.display = 'flex';
 }
 
-async function browseScanDir() {
+async function browseScanDirModal() {
     const r = await API.call('browse_directory');
-    if (r.success && r.path) $('scanDir').value = r.path;
+    if (r.success && r.path) $('scanDirInput').value = r.path;
 }
 
-let _secretScanFindings = [];
-
-async function runSecretScan() {
-    const dir = $('scanDir')?.value?.trim();
-    if (!dir) { toast('Select a directory', 'error'); return; }
-    hideModal();
-    toast('Scanning for secrets...', 'info');
-    const resultsEl = $('secretScanResults');
-    if (resultsEl) resultsEl.innerHTML = '<div style="text-align:center;padding:20px"><span class="spin" style="width:20px;height:20px"></span><div style="font-size:12px;color:var(--text3);margin-top:8px">Scanning files...</div></div>';
-
-    const r = await API.call('scan_secrets', dir);
-    if (!r.success) {
-        if (resultsEl) resultsEl.innerHTML = `<div class="warn med" style="margin-top:12px"><div class="warn-title">Scan failed: ${r.error}</div></div>`;
-        return;
+function showSpecificScan(type) {
+    const label = SCAN_LABELS[type] || type;
+    if (type === 'codereview') {
+        if (!S.ollama.available) {
+            toast('AI Code Review requires Ollama. Start Ollama and load a model.', 'error');
+            return;
+        }
     }
+    showScanDirModal(label, () => runSpecificScan(type));
+}
 
-    const findings = Array.isArray(r.data) ? r.data : [];
-    _secretScanFindings = findings;
+function showSecretScan() {
+    showScanDirModal('Secret Scanner', () => runSpecificScan('secrets'));
+}
 
-    if (findings.length === 0) {
-        if (resultsEl) resultsEl.innerHTML = `
-            <div class="card" style="margin-top:12px;text-align:center;padding:24px;border-color:rgba(126,232,192,0.2)">
-                <div style="font-size:24px;margin-bottom:8px;color:var(--green)">&#10003;</div>
-                <div style="font-size:14px;font-weight:600;color:var(--green)">No secrets found</div>
-                <div style="font-size:12px;color:var(--text3);margin-top:4px">Scanned ${dir.split(/[\\/]/).pop()}</div>
+function showFullAudit() {
+    showScanDirModal('Full Security Audit', () => runSpecificScan('fullaudit'));
+}
+
+function renderScanResults(findings, label, scannedDir) {
+    const el = $('auditResults');
+    if (!el) return;
+
+    if (!findings || findings.length === 0) {
+        el.innerHTML = `
+            <div class="card" style="margin-top:12px;border-color:rgba(126,232,192,0.2)">
+                <div style="text-align:center;padding:24px">
+                    <div style="font-size:24px;margin-bottom:8px;color:var(--green)">&#10003;</div>
+                    <div style="font-size:14px;font-weight:600;color:var(--green)">No issues found</div>
+                    <div style="font-size:12px;color:var(--text3);margin-top:4px">${label} scanned ${scannedDir.split(/[\\/]/).pop()}</div>
+                </div>
             </div>`;
         return;
     }
 
-    const critCount = findings.filter(f => f.severity === 'Critical').length;
-    const highCount = findings.filter(f => f.severity === 'High').length;
+    const crit = findings.filter(f => f.severity === 'Critical');
+    const high = findings.filter(f => f.severity === 'High');
+    const med = findings.filter(f => f.severity === 'Medium');
+    const low = findings.filter(f => f.severity === 'Low');
 
-    if (resultsEl) resultsEl.innerHTML = `
+    el.innerHTML = `
         <div class="card" style="margin-top:12px;border-color:rgba(252,165,165,0.2)">
             <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
                 <div style="font-size:24px;color:var(--red)">&#9888;</div>
                 <div>
-                    <div style="font-size:14px;font-weight:600">${findings.length} secret${findings.length !== 1 ? 's' : ''} found</div>
-                    <div style="font-size:12px;color:var(--text3)">${critCount} critical, ${highCount} high</div>
+                    <div style="font-size:14px;font-weight:600">${findings.length} issue${findings.length !== 1 ? 's' : ''} found</div>
+                    <div style="font-size:12px;color:var(--text3)">
+                        ${crit.length > 0 ? `<span style="color:var(--red)">${crit.length} critical</span> ` : ''}
+                        ${high.length > 0 ? `<span style="color:var(--orange)">${high.length} high</span> ` : ''}
+                        ${med.length > 0 ? `<span style="color:var(--yellow)">${med.length} medium</span> ` : ''}
+                        ${low.length > 0 ? `<span style="color:var(--text3)">${low.length} low</span>` : ''}
+                    </div>
                 </div>
             </div>
-            ${findings.map(f => `
-            <div class="warn crit" style="margin-bottom:8px">
-                <div class="warn-head">
-                    <div class="warn-badge crit">!!</div>
-                    <div style="flex:1;min-width:0">
-                        <div class="warn-title">${f.message}</div>
-                        <div class="warn-file">${f.file || ''}:${f.line || ''}</div>
+            ${findings.map(f => {
+                const cls = f.severity === 'Critical' ? 'crit' : f.severity === 'High' ? 'high' : 'med';
+                return `
+                <div class="warn ${cls}" style="margin-bottom:8px">
+                    <div class="warn-head">
+                        <div class="warn-badge ${cls}">${f.severity === 'Critical' ? '!!' : f.severity === 'High' ? '!' : 'i'}</div>
+                        <div style="flex:1;min-width:0">
+                            <div class="warn-title">${f.message}</div>
+                            <div class="warn-file">${f.file ? f.file.split(/[\\/]/).pop() : ''}${f.line ? ':' + f.line : ''}</div>
+                        </div>
+                        <span class="st st-${cls === 'crit' ? 'crit' : cls === 'high' ? 'warn' : 'info'}">${f.severity}</span>
                     </div>
-                    <span class="st st-crit">${f.severity}</span>
-                </div>
-                <div class="warn-body">
-                    <div class="warn-explain">${f.simple_explanation || ''}</div>
-                    ${f.matched ? `<div style="margin-top:6px;font-family:monospace;font-size:11px;padding:6px 10px;background:rgba(0,0,0,0.2);border-radius:4px;color:var(--red);word-break:break-all">${f.matched}</div>` : ''}
-                </div>
-            </div>`).join('')}
+                    <div class="warn-body">
+                        <div class="warn-explain">${f.simple_explanation || ''}</div>
+                        ${f.matched ? `<div style="margin-top:6px;font-family:monospace;font-size:11px;padding:6px 10px;background:rgba(0,0,0,0.2);border-radius:4px;color:var(--red);word-break:break-all">${f.matched}</div>` : ''}
+                        ${f.fix ? `<div style="margin-top:8px;font-size:12px;color:var(--green)"><strong>Fix:</strong> ${f.fix}</div>` : ''}
+                    </div>
+                </div>`;
+            }).join('')}
         </div>`;
+}
+
+async function runSpecificScan(type) {
+    const dir = $('scanDirInput')?.value?.trim();
+    if (!dir) { toast('Select a directory', 'error'); return; }
+    hideModal();
+
+    const label = SCAN_LABELS[type] || type;
+    toast(`Running ${label}...`, 'info');
+    const el = $('auditResults');
+    if (el) el.innerHTML = '<div style="text-align:center;padding:30px"><span class="spin" style="width:24px;height:24px"></span><div style="font-size:12px;color:var(--text3);margin-top:8px">Scanning...</div></div>';
+
+    let r;
+    switch (type) {
+        case 'secrets': r = await API.call('scan_secrets', dir); break;
+        case 'dependencies': r = await API.call('scan_dependencies', dir); break;
+        case 'env': r = await API.call('scan_env_exposure', dir); break;
+        case 'headers': r = await API.call('scan_security_headers', dir); break;
+        case 'cors': r = await API.call('scan_cors', dir); break;
+        case 'codereview': r = await API.call('scan_secrets', dir); /* placeholder, need AI review */ break;
+        case 'fullaudit': r = await API.call('full_security_audit', dir); break;
+        default: r = { success: false, error: 'Unknown scan type' };
+    }
+
+    if (!r.success) {
+        if (el) el.innerHTML = `<div class="warn med" style="margin-top:12px"><div class="warn-title">Scan failed: ${r.error}</div></div>`;
+        return;
+    }
+
+    const findings = type === 'fullaudit' ? (r.findings || r.data?.findings || []) : (r.data || r.findings || []);
+    renderScanResults(findings, label, dir);
 }
 
 // ═══ History ═════════════════════════════════

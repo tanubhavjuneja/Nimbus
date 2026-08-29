@@ -165,6 +165,36 @@ class Bridge(QObject):
         self._run_worker(call_id, self.cli.scan_directory_secrets, directory)
         return json.dumps({"success": True, "call_id": call_id})
 
+    @Slot(str, result=str)
+    def scan_dependencies(self, directory: str) -> str:
+        call_id = "depscan"
+        self._run_worker(call_id, self.cli.scan_dependencies, directory)
+        return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(str, result=str)
+    def scan_env_exposure(self, directory: str) -> str:
+        call_id = "envscan"
+        self._run_worker(call_id, self.cli.scan_env_exposure, directory)
+        return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(str, result=str)
+    def scan_security_headers(self, directory: str) -> str:
+        call_id = "headerscan"
+        self._run_worker(call_id, self.cli.scan_security_headers, directory)
+        return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(str, result=str)
+    def scan_cors(self, directory: str) -> str:
+        call_id = "corsscan"
+        self._run_worker(call_id, self.cli.scan_cors, directory)
+        return json.dumps({"success": True, "call_id": call_id})
+
+    @Slot(str, result=str)
+    def full_security_audit(self, directory: str) -> str:
+        call_id = "fullaudit"
+        self._run_worker(call_id, self.cli.full_security_audit, directory, self.ollama)
+        return json.dumps({"success": True, "call_id": call_id})
+
     @Slot(result=str)
     def get_warning_history(self) -> str:
         call_id = "history"
