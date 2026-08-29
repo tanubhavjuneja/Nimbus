@@ -383,19 +383,18 @@ async function browseLocalPath(type, name) {
 }
 
 function runProjectScan(dir) {
-    showScanDirModal('Full Security Audit', async () => {
-        const scanDir = $('scanDirInput')?.value?.trim() || dir;
-        if (!scanDir) { toast('Select a directory', 'error'); return; }
-        hideModal();
-        toast('Running full audit...', 'info');
-        const el = $('auditResults');
-        if (!el) return;
-        el.innerHTML = '<div style="text-align:center;padding:30px"><span class="spin" style="width:24px;height:24px"></span><div style="font-size:12px;color:var(--text3);margin-top:8px">Scanning...</div></div>';
-        const r = await API.call('full_security_audit', scanDir);
-        if (!r.success) { el.innerHTML = `<div class="warn med" style="margin-top:12px"><div class="warn-title">Scan failed: ${r.error}</div></div>`; return; }
+    const el = $('detailScanResults');
+    if (!el) { showFullAudit(); return; }
+    el.innerHTML = '<div style="text-align:center;padding:20px"><span class="spin" style="width:20px;height:20px"></span><div style="font-size:12px;color:var(--text3);margin-top:8px">Scanning...</div></div>';
+    (async () => {
+        const r = await API.call('full_security_audit', dir);
+        if (!r.success) { el.innerHTML = `<div class="warn med"><div class="warn-title">Scan failed: ${r.error}</div></div>`; return; }
         const findings = r.findings || r.data?.findings || [];
-        renderScanResults(findings, 'Full Security Audit', scanDir);
-    });
+        renderScanResults(findings, 'Full Security Audit', dir);
+        // Move scan results into detail panel
+        const scanEl = $('auditResults');
+        if (scanEl) { el.innerHTML = scanEl.innerHTML; scanEl.innerHTML = ''; }
+    })();
 }
 
 function renderDetail() {
@@ -420,8 +419,18 @@ function renderDetail() {
                 </div>
                 <button class="btn btn-ghost btn-sm" onclick="browseLocalPath('${d.type}','${d.name}')">Browse</button>
             </div>
-            ${localPath ? `<button class="btn btn-red btn-sm" style="margin-top:8px" onclick="runProjectScan('${localPath.replace(/\\/g, '\\\\')}')">Run Full Audit on This Project</button>` : ''}
-        </div>`;
+            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+                ${localPath ? `<button class="btn btn-red btn-sm" onclick="runProjectScan('${localPath.replace(/\\/g, '\\\\')}')">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    Security Scan
+                </button>` : ''}
+                <button class="btn btn-ghost btn-sm" onclick="browseLocalPath('${d.type}','${d.name}')">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+                    ${localPath ? 'Change Path' : 'Set Path'}
+                </button>
+            </div>
+        </div>
+        <div id="detailScanResults"></div>`;
     }
 
     if (d.type === 'pages') {
@@ -654,7 +663,7 @@ async function createD1() {
     if (!name) { toast('Enter a database name', 'error'); return; }
     toast('Creating database...', 'info');
     const r = await API.call('create_d1_database', name);
-    if (r.success) { toast(r.message || 'Database created!', 'success'); hideModal(); refresh(); }
+    if (r.success) { toast(r.message || 'Database created!', 'success'); hideModal(); refresh(true); }
     else toast(r.error || 'Failed', 'error');
 }
 
@@ -685,7 +694,7 @@ async function createR2() {
     if (!name) { toast('Enter a bucket name', 'error'); return; }
     toast('Creating bucket...', 'info');
     const r = await API.call('create_r2_bucket', name);
-    if (r.success) { toast(r.message || 'Bucket created!', 'success'); hideModal(); refresh(); }
+    if (r.success) { toast(r.message || 'Bucket created!', 'success'); hideModal(); refresh(true); }
     else toast(r.error || 'Failed', 'error');
 }
 
@@ -734,8 +743,7 @@ async function browseProjectDir() {
     if (r.success && r.path) {
         S.scanPath = r.path;
         toast(`Project path set to: ${r.path.split(/[\\/]/).pop()}`, 'success');
-        pServices();
-        refresh();
+        refresh(true);
     }
 }
 
@@ -780,31 +788,59 @@ async function doDeployPages(name) {
     const r = await API.call('deploy', 'pages', name);
     if (r.success) toast('Pages deployed!', 'success');
     else toast(r.error || 'Deploy failed', 'error');
-    refresh();
+    refresh(true);
 }
 
 function showCreatePages() {
     $('modal').innerHTML = `
-        <h3>New Pages Project</h3>
-        <p>Create a new Cloudflare Pages project. Pages hosts static sites and Jamstack apps with automatic HTTPS and CI/CD.</p>
+        <h3>Deploy Pages Project</h3>
+        <p>Select a local directory containing your static site or Jamstack app. Nimbus will deploy it to Cloudflare Pages.</p>
+        <div style="margin:16px 0">
+            <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:6px">Project Directory</label>
+            <div style="display:flex;gap:8px">
+                <input class="inp" id="pagesDir" placeholder="No directory selected" readonly style="flex:1" />
+                <button class="btn btn-glow btn-sm" onclick="browsePagesDir()">Browse</button>
+            </div>
+            <div id="pagesDirStatus" style="margin-top:8px;font-size:11px"></div>
+        </div>
         <div style="margin:16px 0">
             <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:6px">Project Name</label>
-            <input class="inp" id="pagesName" placeholder="e.g. my-website" autofocus />
+            <input class="inp" id="pagesName" placeholder="Auto-detect from directory" />
         </div>
         <div class="modal-acts">
             <button class="btn btn-ghost" onclick="hideModal()">Cancel</button>
-            <button class="btn btn-glow" onclick="createPages()">Create Project</button>
+            <button class="btn btn-glow" id="pagesDeployBtn" onclick="doCreatePages()" disabled>Deploy</button>
         </div>`;
     $('modalBg').style.display = 'flex';
 }
 
-async function createPages() {
+async function browsePagesDir() {
+    const r = await API.call('browse_directory');
+    if (!r.success || !r.path) return;
+    $('pagesDir').value = r.path;
+    $('pagesName').placeholder = r.path.split(/[\\/]/).pop();
+    // Validate directory
+    const v = await API.call('validate_project_dir', r.path);
+    const el = $('pagesDirStatus');
+    const btn = $('pagesDeployBtn');
+    if (v.valid) {
+        el.innerHTML = `<span style="color:var(--green)">&#10003; ${v.message}</span>`;
+        btn.disabled = false;
+    } else {
+        el.innerHTML = `<span style="color:var(--red)">&#10007; ${v.message}</span>`;
+        btn.disabled = true;
+    }
+}
+
+async function doCreatePages() {
+    const dir = $('pagesDir')?.value?.trim();
     const name = $('pagesName')?.value?.trim();
-    if (!name) { toast('Enter a project name', 'error'); return; }
-    toast('Creating Pages project...', 'info');
-    const r = await API.call('create_pages_project', name);
-    if (r.success) { toast(r.message || 'Project created!', 'success'); hideModal(); refresh(); }
-    else toast(r.error || 'Failed', 'error');
+    if (!dir) { toast('Select a directory', 'error'); return; }
+    hideModal();
+    toast('Deploying to Cloudflare Pages...', 'info');
+    const r = await API.call('smart_deploy', dir, name || '', 'pages');
+    if (r.success) { toast(r.message || r.output || 'Deployed!', 'success'); refresh(true); }
+    else toast(r.error || 'Deploy failed', 'error');
 }
 
 function showDeployLocal() {
@@ -843,7 +879,7 @@ async function doDeployLocal() {
     const r = await API.call('smart_deploy', dir, name || '', '');
     if (r.success) toast(r.message || r.output || 'Deployed!', 'success');
     else toast(r.error || 'Deploy failed', 'error');
-    refresh();
+    refresh(true);
 }
 
 async function redeployPages(name) {
@@ -856,39 +892,66 @@ async function redeployPages(name) {
 async function deletePagesProject(name) {
     if (!confirm(`Delete Pages project "${name}"? This cannot be undone.`)) return;
     const r = await API.call('delete_pages_project', name);
-    if (r.success) { toast(r.message, 'success'); refresh(); }
+    if (r.success) { toast(r.message, 'success'); refresh(true); }
     else toast(r.error || 'Delete failed', 'error');
 }
 
 async function deleteWorker(name) {
     if (!confirm(`Delete worker "${name}"? This cannot be undone.`)) return;
     const r = await API.call('delete_worker', name);
-    if (r.success) { toast(r.message, 'success'); refresh(); }
+    if (r.success) { toast(r.message, 'success'); refresh(true); }
     else toast(r.error || 'Delete failed', 'error');
 }
 
 function showCreateWorker() {
     $('modal').innerHTML = `
-        <h3>Create Worker</h3>
-        <p>Create a new Cloudflare Worker. Workers run your code on Cloudflare's edge network with zero cold starts.</p>
+        <h3>Deploy Worker</h3>
+        <p>Select a local directory containing your Cloudflare Worker project (needs wrangler.toml or worker.js).</p>
+        <div style="margin:16px 0">
+            <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:6px">Project Directory</label>
+            <div style="display:flex;gap:8px">
+                <input class="inp" id="workerDir" placeholder="No directory selected" readonly style="flex:1" />
+                <button class="btn btn-glow btn-sm" onclick="browseWorkerDir()">Browse</button>
+            </div>
+            <div id="workerDirStatus" style="margin-top:8px;font-size:11px"></div>
+        </div>
         <div style="margin:16px 0">
             <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:6px">Worker Name</label>
-            <input class="inp" id="workerName" placeholder="e.g. my-api-worker" autofocus />
+            <input class="inp" id="workerName" placeholder="Auto-detect from directory" />
         </div>
         <div class="modal-acts">
             <button class="btn btn-ghost" onclick="hideModal()">Cancel</button>
-            <button class="btn btn-glow" onclick="createWorker()">Create Worker</button>
+            <button class="btn btn-glow" id="workerDeployBtn" onclick="doCreateWorker()" disabled>Deploy</button>
         </div>`;
     $('modalBg').style.display = 'flex';
 }
 
-async function createWorker() {
+async function browseWorkerDir() {
+    const r = await API.call('browse_directory');
+    if (!r.success || !r.path) return;
+    $('workerDir').value = r.path;
+    $('workerName').placeholder = r.path.split(/[\\/]/).pop();
+    const v = await API.call('validate_project_dir', r.path);
+    const el = $('workerDirStatus');
+    const btn = $('workerDeployBtn');
+    if (v.valid) {
+        el.innerHTML = `<span style="color:var(--green)">&#10003; ${v.message}</span>`;
+        btn.disabled = false;
+    } else {
+        el.innerHTML = `<span style="color:var(--red)">&#10007; ${v.message}</span>`;
+        btn.disabled = true;
+    }
+}
+
+async function doCreateWorker() {
+    const dir = $('workerDir')?.value?.trim();
     const name = $('workerName')?.value?.trim();
-    if (!name) { toast('Enter a worker name', 'error'); return; }
-    toast('Creating worker...', 'info');
-    const r = await API.call('create_worker_project', name);
-    if (r.success) { toast(r.message || 'Worker created!', 'success'); hideModal(); }
-    else toast(r.error || 'Failed', 'error');
+    if (!dir) { toast('Select a directory', 'error'); return; }
+    hideModal();
+    toast('Deploying Worker...', 'info');
+    const r = await API.call('smart_deploy', dir, name || '', 'worker');
+    if (r.success) { toast(r.message || r.output || 'Deployed!', 'success'); refresh(true); }
+    else toast(r.error || 'Deploy failed', 'error');
 }
 
 async function showWorkerDetail(name) {
@@ -1361,13 +1424,14 @@ const LOAD_STEPS = [
     'Fetching Workers'
 ];
 
-async function refresh() {
+async function refresh(silent = false) {
     if (!S.loggedIn) return;
 
-    showLoading();
-    setLoadingStep(LOAD_STEPS, 0);
+    if (!silent) {
+        showLoading();
+        setLoadingStep(LOAD_STEPS, 0);
+    }
 
-    // Fire ALL API calls in parallel
     const promises = [
         API.call('list_pages'),
         API.call('list_d1'),
@@ -1381,14 +1445,15 @@ async function refresh() {
         API.call('list_workers')
     ];
 
-    setLoadingStep(LOAD_STEPS, 1);
+    if (!silent) setLoadingStep(LOAD_STEPS, 1);
 
     const results = await Promise.allSettled(promises);
 
-    setLoadingStep(LOAD_STEPS, LOAD_STEPS.length);
-
-    $('loadingText').textContent = 'All loaded!';
-    setTimeout(() => hideLoading(), 200);
+    if (!silent) {
+        setLoadingStep(LOAD_STEPS, LOAD_STEPS.length);
+        $('loadingText').textContent = 'All loaded!';
+        setTimeout(() => hideLoading(), 200);
+    }
 
     const get = (r, fallback) => {
         if (r.status !== 'fulfilled') return fallback;
@@ -1421,6 +1486,9 @@ async function refresh() {
 
     S.alwaysIgnored = get(results[8], []);
     S.workers = get(results[9], []);
+
+    // Save to cache
+    try { API.call('save_cache', JSON.stringify({ pages: S.pages, workers: S.workers, d1: S.d1, kv: S.kv, r2: S.r2, secrets: S.secrets, ts: Date.now() })); } catch(e) {}
 
     badge();
     render();
@@ -1519,10 +1587,6 @@ async function init() {
     const blo = $('btnLogout'); if (blo) blo.onclick = doLogout;
     const mb = $('modalBg'); if (mb) mb.onclick = e => { if (e.target === e.currentTarget) hideModal(); };
 
-    // Show loading immediately
-    showLoading();
-    setLoadingStep(['Checking Cloudflare login'], 0);
-
     // Check login
     const lr = await API.call('check_login');
 
@@ -1530,10 +1594,27 @@ async function init() {
         S.loggedIn = true;
         S.account = lr.data.account || 'Unknown';
         updateUI();
-        toast(`Connected as ${S.account}`, 'success');
-        refresh();
+
+        // Load local paths from config
+        const cached = await API.call('load_cache');
+        if (cached && cached.pages) {
+            S.pages = cached.pages || [];
+            S.workers = cached.workers || [];
+            S.d1 = cached.d1 || [];
+            S.kv = cached.kv || [];
+            S.r2 = cached.r2 || [];
+            S.secrets = cached.secrets || [];
+            badge();
+            render();
+        }
+
+        // Load audience setting from config
+        const audR = await API.call('load_settings', 'audience');
+        if (audR?.success && audR.value) S.audience = audR.value;
+
+        // Refresh in background (silent)
+        refresh(true);
     } else {
-        // Not logged in — show login screen, no dashboard
         showLoginScreen();
     }
 }

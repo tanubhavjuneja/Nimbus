@@ -43,6 +43,10 @@ class Worker(QThread):
 class Bridge(QObject):
     """Python bridge — heavy operations run in QThread workers."""
 
+    _CONFIG_DIR = Path(os.environ.get("APPDATA", "~")) / ".cloudguard"
+    _CONFIG_FILE = _CONFIG_DIR / "config.json"
+    _CACHE_FILE = _CONFIG_DIR / "project_cache.json"
+
     def __init__(self, cli: WranglerCLI, monitor: SecurityMonitor,
                  warning_mgr: WarningManager, ollama: OllamaClient, parent=None):
         super().__init__(parent)
@@ -52,6 +56,41 @@ class Bridge(QObject):
         self.ollama = ollama
         self._workers: list[Worker] = []
         self._pending: dict[str, callable] = {}
+        self._main_window = None
+        self._config = self._load_config()
+
+    def set_main_window(self, win):
+        self._main_window = win
+
+    def _load_config(self) -> dict:
+        try:
+            if self._CONFIG_FILE.exists():
+                return json.loads(self._CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return {"local_paths": {}, "settings": {}}
+
+    def _save_config(self):
+        try:
+            self._CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            self._CONFIG_FILE.write_text(json.dumps(self._config, indent=2, default=str), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _load_cache(self) -> dict:
+        try:
+            if self._CACHE_FILE.exists():
+                return json.loads(self._CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return {}
+
+    def _save_cache(self, data: dict):
+        try:
+            self._CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            self._CACHE_FILE.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+        except Exception:
+            pass
 
     def _run_worker(self, call_id: str, func, *args, **kwargs):
         """Run func in a background thread, store callback for JS to poll."""
@@ -165,15 +204,27 @@ class Bridge(QObject):
         self._run_worker(call_id, self.cli.scan_directory_secrets, directory)
         return json.dumps({"success": True, "call_id": call_id})
 
+    @Slot(result=str)
+    def load_cache(self) -> str:
+        return json.dumps(self._load_cache())
+
+    @Slot(str, result=str)
+    def save_cache(self, data_json: str) -> str:
+        try:
+            self._save_cache(json.loads(data_json))
+            return json.dumps({"success": True})
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)})
+
     @Slot(str, result=str)
     def save_local_path(self, project_name: str) -> str:
         """Browse and save a local directory path for a project."""
         try:
-            import os
-            app = QApplication.instance()
-            d = QFileDialog.getExistingDirectory(app, "Select Local Project Directory")
+            d = QFileDialog.getExistingDirectory(self._main_window, "Select Local Project Directory")
             if d:
                 self.cli._project_local_paths[project_name] = d
+                self._config.setdefault("local_paths", {})[project_name] = d
+                self._save_config()
                 return json.dumps({"success": True, "path": d})
             return json.dumps({"success": False, "error": "No directory selected"})
         except Exception as e:
@@ -183,7 +234,24 @@ class Bridge(QObject):
     def get_local_path(self, project_name: str) -> str:
         """Get saved local directory path for a project."""
         p = self.cli._project_local_paths.get(project_name, "")
+        if not p:
+            p = self._config.get("local_paths", {}).get(project_name, "")
+            if p:
+                self.cli._project_local_paths[project_name] = p
         return json.dumps({"success": True, "path": p})
+
+    @Slot(str, result=str)
+    def load_settings(self, key: str) -> str:
+        """Load a setting from config."""
+        val = self._config.get("settings", {}).get(key, "")
+        return json.dumps({"success": True, "value": val})
+
+    @Slot(str, str, result=str)
+    def save_setting(self, key: str, value: str) -> str:
+        """Save a setting to config."""
+        self._config.setdefault("settings", {})[key] = value
+        self._save_config()
+        return json.dumps({"success": True})
 
     @Slot(str, str, result=str)
     def fix_finding(self, finding_json: str, project_path: str) -> str:
@@ -440,12 +508,37 @@ class Bridge(QObject):
     @Slot(result=str)
     def browse_directory(self) -> str:
         try:
-            dir_path = QFileDialog.getExistingDirectory(None, "Select Project Directory", "")
+            dir_path = QFileDialog.getExistingDirectory(self._main_window, "Select Project Directory")
             if dir_path:
                 return json.dumps({"success": True, "path": dir_path})
             return json.dumps({"success": False, "error": "No directory selected"})
         except Exception as e:
             return json.dumps({"success": False, "error": str(e)})
+
+    @Slot(str, result=str)
+    def validate_project_dir(self, dir_path: str) -> str:
+        """Validate a local directory for Pages/Worker deployment."""
+        p = Path(dir_path)
+        if not p.exists():
+            return json.dumps({"valid": False, "message": "Directory does not exist"})
+        has_wrangler = any((p / f).exists() for f in ["wrangler.toml", "wrangler.jsonc", "wrangler.json"])
+        has_pkg = (p / "package.json").exists()
+        has_index = any((p / f).exists() for f in ["index.html", "index.js", "index.ts", "src/index.ts", "src/index.js", "src/index.tsx", "src/index.jsx"])
+        has_worker = any((p / f).exists() for f in ["worker.js", "worker.ts", "src/worker.js", "src/worker.ts"])
+
+        if has_wrangler:
+            # Worker project
+            return json.dumps({"valid": True, "message": "Worker project detected (wrangler.toml found)", "type": "worker"})
+        elif has_worker:
+            return json.dumps({"valid": True, "message": "Worker source detected (worker.js/ts found)", "type": "worker"})
+        elif has_pkg and has_index:
+            return json.dumps({"valid": True, "message": "Frontend project detected (package.json + index found)", "type": "pages"})
+        elif has_pkg:
+            return json.dumps({"valid": True, "message": "Node project detected (package.json found) — will build then deploy", "type": "pages"})
+        elif has_index:
+            return json.dumps({"valid": True, "message": "Static site detected (index.html found)", "type": "pages"})
+        else:
+            return json.dumps({"valid": False, "message": "No recognizable project files. Add wrangler.toml, package.json, or index.html"})
 
     @Slot(str, str, result=str)
     def fix_finding(self, finding_json: str, project_path: str = ".") -> str:
@@ -527,6 +620,7 @@ class MainWindow(QWebEngineView):
     def __init__(self, bridge: Bridge):
         super().__init__()
         self.bridge = bridge
+        bridge.set_main_window(self)
         self.setWindowTitle("Nimbus")
         self.resize(1280, 800)
 
